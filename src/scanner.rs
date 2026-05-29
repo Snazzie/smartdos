@@ -59,13 +59,21 @@ pub fn start_scanner(
             let scan_channels = scan_channels_for(supports_5ghz, supports_6ghz);
             let mut locked = false;
             let mut sweep_mac: Option<String> = None;
+            // Lazily-created handshake/PMKID capture file (opened on first EAPOL).
+            let mut hs_writer: Option<crate::handshake::PcapWriter> = None;
+            // BSSIDs whose beacon has already been written to the capture — one
+            // beacon per AP gives crackers the ESSID (EAPOL frames don't carry it).
+            let mut beacon_dumped: std::collections::HashSet<String> =
+                std::collections::HashSet::new();
 
             while running.load(Ordering::Relaxed) {
                 // Drain scanner commands
                 while let Ok(cmd) = cmd_rx.try_recv() {
                     match cmd {
                         ScannerCommand::LockChannel(ch, band) => {
-                            let _ = set_channel(&iface, ch, band);
+                            if let Err(e) = set_channel(&iface, ch, band) {
+                                let _ = event_tx.send(ScannerEvent::Error(format!("Channel lock failed: {}", e)));
+                            }
                             let _ = event_tx.send(ScannerEvent::ChannelChanged { channel: ch, band });
                             locked = true;
                             sweep_mac = None;
@@ -89,7 +97,9 @@ pub fn start_scanner(
                 {
                     channel_idx = (channel_idx + 1) % scan_channels.len();
                     let (ch, band) = scan_channels[channel_idx];
-                    let _ = set_channel(&iface, ch, band);
+                    if let Err(e) = set_channel(&iface, ch, band) {
+                        let _ = event_tx.send(ScannerEvent::Error(format!("Channel hop failed: {}", e)));
+                    }
                     let _ = event_tx.send(ScannerEvent::ChannelChanged { channel: ch, band });
                     last_channel_hop = Instant::now();
                 }
@@ -98,10 +108,46 @@ pub fn start_scanner(
                     Ok(packet) => {
                         total_packets += 1;
 
+                        // EAPOL / WPA-handshake capture: dump any 802.1X frame
+                        // (with its radiotap header) to a session pcap that
+                        // aircrack-ng / hashcat can crack offline.
+                        if let Some((bssid, sta)) = crate::handshake::eapol_endpoints(packet.data) {
+                            if hs_writer.is_none() {
+                                match open_handshake_writer() {
+                                    Ok((w, path)) => {
+                                        let _ = event_tx.send(ScannerEvent::Error(format!(
+                                            "Handshake capture started → {}", path
+                                        )));
+                                        hs_writer = Some(w);
+                                    }
+                                    Err(e) => {
+                                        let _ = event_tx.send(ScannerEvent::Error(format!(
+                                            "Handshake file error: {}", e
+                                        )));
+                                    }
+                                }
+                            }
+                            if let Some(w) = hs_writer.as_mut() {
+                                let ts = packet.header.ts;
+                                let _ = w.write_frame(ts.tv_sec as u32, ts.tv_usec as u32, packet.data);
+                            }
+                            let _ = event_tx.send(ScannerEvent::Error(format!(
+                                "EAPOL captured: {} ↔ {}", bssid, sta
+                            )));
+                        }
+
                         // Try parsing as beacon / probe response (AP detection)
                         // pcap::Packet doesn't implement Clone, so we slice the data
                         if let Some(ap) = parse_beacon_frame_raw(packet.data) {
                             let bssid = ap.bssid.clone();
+                            // Record one beacon per AP into the handshake capture so
+                            // the ESSID is recoverable alongside the EAPOL frames.
+                            if let Some(w) = hs_writer.as_mut() {
+                                if beacon_dumped.insert(bssid.clone()) {
+                                    let ts = packet.header.ts;
+                                    let _ = w.write_frame(ts.tv_sec as u32, ts.tv_usec as u32, packet.data);
+                                }
+                            }
                             if let Some(existing) = ap_map.get_mut(&bssid) {
                                 existing.signal_dbm = ap.signal_dbm;
                                 existing.signal_percent = ap.signal_percent;
@@ -175,10 +221,18 @@ pub fn start_scanner(
 #[cfg(target_os = "linux")]
 fn set_channel(iface: &str, channel: u8, band: Band) -> Result<()> {
     let freq = channel_to_freq_mhz(channel, band);
-    std::process::Command::new("iw")
+    let out = std::process::Command::new("iw")
         .args(["dev", iface, "set", "freq", &freq.to_string()])
         .output()
         .context(format!("Failed to set freq {} MHz on {}", freq, iface))?;
+    if !out.status.success() {
+        anyhow::bail!(
+            "iw set freq {} MHz on {} failed: {}",
+            freq,
+            iface,
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
+    }
     Ok(())
 }
 
@@ -206,15 +260,29 @@ fn open_capture(iface: &str) -> Result<Capture<pcap::Active>> {
             .context(format!("Failed to open capture on {}", iface))?,
     };
 
-    // Set filter for all 802.11 management frames
-    // type mgt = frame_control bits 2-3 = 0b00
-    // BPF: wlan[0] & 0x0C == 0x00 (type = management)
-    // This captures: beacon, probe req/resp, assoc req/resp, auth, deauth
-    let filter = "wlan[0] & 0x0C == 0x00";
+    // Capture management frames (type 0: beacon/probe/assoc/auth/deauth) AND
+    // data frames (type 2). Data frames are needed for EAPOL/handshake capture
+    // and for discovering associated clients from their traffic.
+    // BPF: type bits = frame_control bits 2-3.
+    let filter = "(wlan[0] & 0x0C) == 0x00 or (wlan[0] & 0x0C) == 0x08";
     cap.filter(filter, true)
-        .context("Failed to set management frame filter")?;
+        .context("Failed to set capture filter")?;
 
     Ok(cap)
+}
+
+/// Open a new per-session handshake capture file under ~/.smartdos/handshakes/.
+/// Returns the writer and its display path.
+#[cfg(target_os = "linux")]
+fn open_handshake_writer() -> Result<(crate::handshake::PcapWriter, String)> {
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
+    let dir = std::path::PathBuf::from(home).join(".smartdos").join("handshakes");
+    std::fs::create_dir_all(&dir).context("create handshakes dir")?;
+    let stamp = chrono::Local::now().format("%Y%m%d-%H%M%S");
+    let path = dir.join(format!("session-{}.pcap", stamp));
+    let writer = crate::handshake::PcapWriter::create(&path)
+        .context("create handshake pcap")?;
+    Ok((writer, path.display().to_string()))
 }
 
 /// Parse a beacon or probe response frame → returns AP info
@@ -508,6 +576,7 @@ fn parse_client_frame_raw(data: &[u8]) -> Option<(String, Client)> {
                         packets: 1,
                         last_seen: Instant::now(),
                         associated: false,
+                        friendly_name: None,
                     },
                 ))
             } else {
@@ -526,6 +595,7 @@ fn parse_client_frame_raw(data: &[u8]) -> Option<(String, Client)> {
                         packets: 1,
                         last_seen: Instant::now(),
                         associated: true,
+                        friendly_name: None,
                     },
                 ))
             } else {
@@ -543,6 +613,7 @@ fn parse_client_frame_raw(data: &[u8]) -> Option<(String, Client)> {
                         packets: 1,
                         last_seen: Instant::now(),
                         associated: true,
+                        friendly_name: None,
                     },
                 ))
             } else {
@@ -560,6 +631,7 @@ fn parse_client_frame_raw(data: &[u8]) -> Option<(String, Client)> {
                         packets: 1,
                         last_seen: Instant::now(),
                         associated: true,
+                        friendly_name: None,
                     },
                 ))
             } else {
@@ -584,6 +656,7 @@ fn parse_client_frame_raw(data: &[u8]) -> Option<(String, Client)> {
                             packets: 1,
                             last_seen: Instant::now(),
                             associated: true,
+                            friendly_name: None,
                         },
                     ))
                 } else if da == bssid {
@@ -596,6 +669,7 @@ fn parse_client_frame_raw(data: &[u8]) -> Option<(String, Client)> {
                             packets: 1,
                             last_seen: Instant::now(),
                             associated: true,
+                            friendly_name: None,
                         },
                     ))
                 } else {
@@ -705,6 +779,61 @@ fn mac_to_string(bytes: &[u8]) -> String {
         "{:02X}:{:02X}:{:02X}:{:02X}:{:02X}:{:02X}",
         bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5]
     )
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod tests {
+    use super::*;
+
+    // RSN IE contents: version | group | pairwise(count+suites) | akm(count+suites) | caps
+    #[test]
+    fn rsn_psk_ccmp_is_wpa2() {
+        let ie = [
+            0x01, 0x00, 0x00, 0x0F, 0xAC, 0x04, 0x01, 0x00, 0x00, 0x0F, 0xAC, 0x04, 0x01, 0x00,
+            0x00, 0x0F, 0xAC, 0x02, 0x00, 0x00,
+        ];
+        assert_eq!(parse_rsn_ie(&ie), "WPA2");
+    }
+
+    #[test]
+    fn rsn_sae_is_wpa3() {
+        let ie = [
+            0x01, 0x00, 0x00, 0x0F, 0xAC, 0x04, 0x01, 0x00, 0x00, 0x0F, 0xAC, 0x04, 0x01, 0x00,
+            0x00, 0x0F, 0xAC, 0x08, 0x00, 0x00,
+        ];
+        assert_eq!(parse_rsn_ie(&ie), "WPA3");
+    }
+
+    #[test]
+    fn rsn_enterprise_is_w2_ent() {
+        let ie = [
+            0x01, 0x00, 0x00, 0x0F, 0xAC, 0x04, 0x01, 0x00, 0x00, 0x0F, 0xAC, 0x04, 0x01, 0x00,
+            0x00, 0x0F, 0xAC, 0x01, 0x00, 0x00,
+        ];
+        assert_eq!(parse_rsn_ie(&ie), "W2-Ent");
+    }
+
+    #[test]
+    fn mac_formats_uppercase_colons() {
+        assert_eq!(
+            mac_to_string(&[0xAA, 0xBB, 0xCC, 0x11, 0x22, 0x33]),
+            "AA:BB:CC:11:22:33"
+        );
+    }
+
+    #[test]
+    fn radiotap_offset_reads_length_field() {
+        let data = [0u8, 0, 8, 0, 0, 0, 0, 0, 0xDE];
+        let (off, _sig) = parse_radiotap_offset(&data);
+        assert_eq!(off, 8);
+    }
+
+    #[test]
+    fn radiotap_signal_reads_antenna_dbm() {
+        // present bitmap = bit5 (antenna signal); signal byte at offset 8.
+        let data = [0u8, 0, 9, 0, 0x20, 0, 0, 0, (-50i8) as u8];
+        assert_eq!(parse_radiotap_signal(&data), -50);
+    }
 }
 
 // ── Stub implementation (non-Linux / macOS dev) ───────────────────────────────

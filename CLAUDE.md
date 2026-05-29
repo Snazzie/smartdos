@@ -20,9 +20,18 @@ cargo clippy
 
 # Run (requires root + Linux + monitor-capable wireless NIC)
 sudo ./target/release/smartdos [interface]   # e.g. sudo ./target/release/smartdos wlan0
+# Startup shows an authorization consent prompt. Bypass for automation:
+sudo ./target/release/smartdos --yes         # or SMARTDOS_AUTHORIZED=1
+
+# Tests (pure logic: frame builders, radiotap, EAPOL parse, pcap writer, IE decode)
+cargo test
 ```
 
-No test suite exists. Verify changes with `cargo check` and `cargo clippy`.
+Tests cover the platform-independent logic and run on any OS. The Linux capture/
+injection glue is covered only by `cargo check`/`cargo test` in CI
+(`.github/workflows/ci.yml`) — that is the gate that catches
+`cfg(target_os = "linux")` breakage, since dev happens on the macOS stub. Always
+rely on CI (or a Linux box) to verify the real target.
 
 ## System Dependencies
 
@@ -55,11 +64,12 @@ main thread (TUI event loop + key handling)
 |---|---|
 | `types.rs` | All shared structs/enums: `App`, `AccessPoint`, `Target`, `Client`, `ScannerEvent`, `AttackEvent`, `AttackMode`, `DeauthScope` |
 | `interface.rs` | Wireless interface discovery (`iw dev`), monitor mode via `airmon-ng` with `iw` fallback |
-| `scanner.rs` | Background pcap capture of 802.11 management frames; channel hops across `CHANNELS_2GHZ` every `CHANNEL_HOP_MS` (250ms); sends `ScannerEvent` to main |
-| `attack.rs` | Deauth frame injection; supports `RoundRobin` (cycle targets) and `Parallel` (all simultaneously); sends `AttackEvent` to main |
-| `app.rs` | `App` state mutations: processes incoming `ScannerEvent`/`AttackEvent`, manages AP/target/client lists |
+| `scanner.rs` | Background pcap capture of 802.11 management **and data** frames (filter `(wlan[0]&0x0C)==0x00 or ==0x08`); channel hops across `CHANNELS_2GHZ` every `CHANNEL_HOP_MS` (250ms); detects EAPOL → `handshake.rs`; sends `ScannerEvent` to main |
+| `attack.rs` | Frame injection (Deauth / AuthDos / BeaconFlood); pure `build_*_frame` builders (unit-tested) wrapped by Linux pcap senders; `RoundRobin` / `Parallel` modes; sends `AttackEvent` to main |
+| `handshake.rs` | Platform-independent WPA-handshake/PMKID capture: `PcapWriter` (libpcap-format, radiotap linktype 127) + `eapol_endpoints` EAPOL detector. Captures land in `~/.smartdos/handshakes/session-*.pcap` (crackable with aircrack-ng/hashcat) |
+| `app.rs` | `App` state mutations: processes incoming `ScannerEvent`/`AttackEvent`, manages AP/target/client lists; session-log rotation |
 | `ui.rs` | Ratatui rendering: 4-region layout (top bar → body → logs → footer) |
-| `main.rs` | Entry point: root check, CLI arg parsing, monitor mode setup, terminal init, main event loop |
+| `main.rs` | Entry point: root check, authorization consent gate, CLI arg parsing, monitor mode setup, terminal init, main event loop |
 
 ### UI Layout
 

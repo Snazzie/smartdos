@@ -115,14 +115,14 @@ pub struct Target {
 }
 
 /// Deauth scope: broadcast all clients, or target a specific client
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum DeauthScope {
     Broadcast,
     Client { client_mac: String },
 }
 
 /// Attack orchestration mode
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum AttackMode {
     RoundRobin,
     Parallel,
@@ -138,7 +138,7 @@ impl AttackMode {
 }
 
 /// Attack type: deauth frames, auth-flood DoS, or beacon flood
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum AttackType {
     Deauth,
     AuthDos,
@@ -268,6 +268,8 @@ pub struct App {
     pub deauth_scope: DeauthScope,
     pub followed_clients: Vec<(String, Option<String>)>,
     pub log_file: Option<File>,
+    pub log_path: Option<std::path::PathBuf>,
+    pub log_bytes: u64,
     pub pursuit_mode: bool,
     pub last_ap_save: Instant,
     pub client_names: HashMap<String, String>,
@@ -333,6 +335,8 @@ impl App {
             deauth_scope: DeauthScope::Broadcast,
             followed_clients: Vec::new(),
             log_file: None,
+            log_path: None,
+            log_bytes: 0,
             pursuit_mode: false,
             last_ap_save: Instant::now(),
             client_names: HashMap::new(),
@@ -354,7 +358,9 @@ impl App {
         }
         if let Some(ref mut f) = self.log_file {
             let ts = chrono::Local::now().format("%H:%M:%S");
-            let _ = writeln!(f, "[{}] {}", ts, msg);
+            let line = format!("[{}] {}", ts, msg);
+            let _ = writeln!(f, "{}", line);
+            self.log_bytes += line.len() as u64 + 1;
         }
     }
 

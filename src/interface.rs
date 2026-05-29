@@ -255,13 +255,20 @@ pub fn check_root() -> bool {
 #[allow(dead_code)]
 pub fn set_channel(mon_iface: &str, channel: u8, band: Band) -> Result<()> {
     let freq = channel_to_freq_mhz(channel, band);
-    Command::new("iw")
+    let out = Command::new("iw")
         .args(["dev", mon_iface, "set", "freq", &freq.to_string()])
         .output()
         .context(format!(
             "Failed to set freq {} MHz (ch {} {:?}) on {}",
             freq, channel, band, mon_iface
         ))?;
+    if !out.status.success() {
+        anyhow::bail!(
+            "iw set freq {} MHz (ch {} {:?}) on {} failed: {}",
+            freq, channel, band, mon_iface,
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
+    }
     Ok(())
 }
 

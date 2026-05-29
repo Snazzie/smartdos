@@ -1,5 +1,6 @@
 mod app;
 mod attack;
+mod handshake;
 mod interface;
 mod oui;
 mod persist;
@@ -30,6 +31,15 @@ fn main() -> Result<()> {
     if !interface::check_root() {
         eprintln!("⚠  smartdos requires root privileges for monitor mode and packet injection.");
         eprintln!("   Run with: sudo smartdos\n");
+        std::process::exit(1);
+    }
+
+    // Authorization gate — this tool injects frames and captures traffic.
+    let args: Vec<String> = std::env::args().collect();
+    let consent_bypassed = args.iter().any(|a| a == "-y" || a == "--yes")
+        || std::env::var("SMARTDOS_AUTHORIZED").is_ok();
+    if !consent_bypassed && !confirm_authorization() {
+        eprintln!("Authorization not confirmed. Exiting.");
         std::process::exit(1);
     }
 
@@ -83,6 +93,15 @@ fn main() -> Result<()> {
         app.add_log(format!("Loaded {} client name{}", count, if count == 1 { "" } else { "s" }));
     }
 
+    if let Some(s) = persist::load_attack_settings() {
+        app.attack_type = s.attack_type;
+        app.attack_mode = s.attack_mode;
+        app.burst_size = s.burst_size;
+        app.send_interval_ms = s.send_interval_ms;
+        app.pursuit_mode = s.pursuit_mode;
+        app.deauth_scope = s.deauth_scope;
+    }
+
     let loaded = persist::load_targets();
     if !loaded.is_empty() {
         let count = loaded.len();
@@ -131,6 +150,26 @@ fn main() -> Result<()> {
     let res = run_tui(&mut terminal, &mut app);
     shutdown(&mut terminal, &app);
     res
+}
+
+/// Require explicit operator authorization before doing anything active.
+/// Bypass with `-y`/`--yes` or `SMARTDOS_AUTHORIZED=1` for automated runs.
+fn confirm_authorization() -> bool {
+    use std::io::Write;
+    println!();
+    println!("┌─ smartdos — AUTHORIZATION REQUIRED ──────────────────────────────┐");
+    println!("│ This tool injects 802.11 deauth/auth/beacon frames and captures  │");
+    println!("│ wireless traffic (incl. WPA handshakes). Use ONLY on networks    │");
+    println!("│ you own or are explicitly authorized to test. Unauthorized use   │");
+    println!("│ is illegal in most jurisdictions.                                │");
+    println!("└──────────────────────────────────────────────────────────────────┘");
+    print!("Type 'yes' to confirm you are authorized: ");
+    let _ = io::stdout().flush();
+    let mut line = String::new();
+    if io::stdin().read_line(&mut line).is_err() {
+        return false;
+    }
+    line.trim().eq_ignore_ascii_case("yes")
 }
 
 fn activate_monitor(iface: &str) -> String {
@@ -182,6 +221,14 @@ fn run_tui<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> Result<()> 
                 app.burst_size = burst;
                 app.send_interval_ms = interval;
                 app.add_log(format!("Settings: burst={} interval={}ms", burst, interval));
+                let _ = persist::save_attack_settings(&persist::AttackSettings {
+                    attack_type: app.attack_type,
+                    attack_mode: app.attack_mode,
+                    burst_size: burst,
+                    send_interval_ms: interval,
+                    pursuit_mode: app.pursuit_mode,
+                    deauth_scope: app.deauth_scope.clone(),
+                });
                 if app.attack_running {
                     if let Some(ref tx) = app.attack_cmd_tx {
                         let _ = tx.send(types::AttackCommand::UpdateSettings {
@@ -541,12 +588,36 @@ fn handle_key_event(app: &mut App, key: KeyEvent) {
         }
         KeyCode::Char('a') | KeyCode::Char('A') => {
             app::toggle_attack_type(app);
+            let _ = persist::save_attack_settings(&persist::AttackSettings {
+                attack_type: app.attack_type,
+                attack_mode: app.attack_mode,
+                burst_size: app.burst_size,
+                send_interval_ms: app.send_interval_ms,
+                pursuit_mode: app.pursuit_mode,
+                deauth_scope: app.deauth_scope.clone(),
+            });
         }
         KeyCode::Char('m') | KeyCode::Char('M') => {
             app::toggle_attack_mode(app);
+            let _ = persist::save_attack_settings(&persist::AttackSettings {
+                attack_type: app.attack_type,
+                attack_mode: app.attack_mode,
+                burst_size: app.burst_size,
+                send_interval_ms: app.send_interval_ms,
+                pursuit_mode: app.pursuit_mode,
+                deauth_scope: app.deauth_scope.clone(),
+            });
         }
         KeyCode::Char('p') | KeyCode::Char('P') => {
             app::toggle_pursuit_mode(app);
+            let _ = persist::save_attack_settings(&persist::AttackSettings {
+                attack_type: app.attack_type,
+                attack_mode: app.attack_mode,
+                burst_size: app.burst_size,
+                send_interval_ms: app.send_interval_ms,
+                pursuit_mode: app.pursuit_mode,
+                deauth_scope: app.deauth_scope.clone(),
+            });
         }
         KeyCode::Char('s') | KeyCode::Char('S') => {
             if app.attack_running {

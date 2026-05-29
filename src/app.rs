@@ -23,6 +23,8 @@ pub fn update(app: &mut App) {
         app.last_ap_save = Instant::now();
     }
 
+    rotate_log_if_needed(app);
+
     // Update FPS counter
     app.fps_counter.0 += 1;
     if app.fps_counter.1.elapsed() >= Duration::from_secs(1) {
@@ -288,11 +290,37 @@ pub fn init_log_file(app: &mut App) {
     let path = dir.join("session.log");
     match OpenOptions::new().create(true).append(true).open(&path) {
         Ok(f) => {
+            app.log_bytes = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
             app.log_file = Some(f);
+            app.log_path = Some(path.clone());
             app.add_log(format!("Logging to {}", path.display()));
         }
         Err(e) => {
             app.add_log(format!("Log file open failed: {}", e));
+        }
+    }
+}
+
+/// Cap the on-disk session log: rotate to `session.log.1` once it exceeds the
+/// size limit so long-running sessions don't grow the file without bound.
+const LOG_MAX_BYTES: u64 = 5 * 1024 * 1024;
+
+fn rotate_log_if_needed(app: &mut App) {
+    if app.log_bytes <= LOG_MAX_BYTES {
+        return;
+    }
+    let Some(path) = app.log_path.clone() else { return };
+    app.log_file = None; // drop handle before rename
+    let rotated = path.with_extension("log.1");
+    let _ = std::fs::rename(&path, &rotated);
+    match OpenOptions::new().create(true).append(true).open(&path) {
+        Ok(f) => {
+            app.log_file = Some(f);
+            app.log_bytes = 0;
+            app.add_log("Log rotated → session.log.1".to_string());
+        }
+        Err(e) => {
+            app.add_log(format!("Log rotation failed: {}", e));
         }
     }
 }

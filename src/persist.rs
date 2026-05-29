@@ -3,13 +3,39 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::time::Instant;
 
-use crate::types::{AccessPoint, Band, Target};
+use crate::types::{AccessPoint, AttackMode, AttackType, Band, DeauthScope, Target};
 
 #[derive(Serialize, Deserialize)]
 struct SavedTarget {
     bssid: String,
     ssid: String,
     channel: u8,
+}
+
+fn attack_settings_path() -> PathBuf {
+    smartdos_dir().join("attack_settings.json")
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct AttackSettings {
+    pub attack_type: AttackType,
+    pub attack_mode: AttackMode,
+    pub burst_size: u16,
+    pub send_interval_ms: u64,
+    pub pursuit_mode: bool,
+    pub deauth_scope: DeauthScope,
+}
+
+pub fn save_attack_settings(settings: &AttackSettings) -> Result<()> {
+    let path = attack_settings_path();
+    let _ = std::fs::create_dir_all(smartdos_dir());
+    std::fs::write(&path, serde_json::to_string_pretty(settings)?)?;
+    Ok(())
+}
+
+pub fn load_attack_settings() -> Option<AttackSettings> {
+    let data = std::fs::read_to_string(attack_settings_path()).ok()?;
+    serde_json::from_str(&data).ok()
 }
 
 fn smartdos_dir() -> PathBuf {

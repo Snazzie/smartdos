@@ -1,0 +1,46 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # Primary gate: the real target is Linux + libpcap. Dev happens on macOS
+  # (stub build), so this is what catches cfg(target_os = "linux") breakage.
+  linux:
+    name: Linux build, clippy & tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install libpcap
+        run: sudo apt-get update && sudo apt-get install -y libpcap-dev
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+      - name: Format check
+        run: cargo fmt --all --check
+        continue-on-error: true
+      - name: Build (cargo check)
+        run: cargo check --all-targets
+      - name: Clippy
+        run: cargo clippy --all-targets
+      - name: Tests
+        run: cargo test --all-targets
+
+  # Secondary: ensure the macOS dev stub keeps compiling and its unit tests pass.
+  macos:
+    name: macOS stub build & tests
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build (cargo check)
+        run: cargo check --all-targets
+      - name: Tests
+        run: cargo test --all-targets
