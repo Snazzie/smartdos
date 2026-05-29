@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-#[cfg(target_os = "linux")]
+#[cfg(all(not(feature = "demo"), target_os = "linux"))]
 use pcap::{Capture, Device};
 use std::sync::mpsc;
 use std::sync::{
@@ -9,7 +9,7 @@ use std::sync::{
 use std::time::{Duration, Instant};
 
 use crate::types::{AccessPoint, Band, Client, ScannerCommand, ScannerEvent, CHANNEL_HOP_MS, scan_channels_for};
-#[cfg(target_os = "linux")]
+#[cfg(all(not(feature = "demo"), target_os = "linux"))]
 use crate::types::{channel_to_freq_mhz, freq_to_band};
 
 // ── Linux implementation ──────────────────────────────────────────────────────
@@ -18,7 +18,7 @@ use crate::types::{channel_to_freq_mhz, freq_to_band};
 ///
 /// Captures all 802.11 management frames (beacons, probe req/resp, assoc, auth)
 /// to discover APs and clients. Performs channel hopping when enabled.
-#[cfg(target_os = "linux")]
+#[cfg(all(not(feature = "demo"), target_os = "linux"))]
 pub fn start_scanner(
     iface: &str,
     event_tx: mpsc::Sender<ScannerEvent>,
@@ -218,7 +218,7 @@ pub fn start_scanner(
 }
 
 /// Set channel on a monitor interface via frequency.
-#[cfg(target_os = "linux")]
+#[cfg(all(not(feature = "demo"), target_os = "linux"))]
 fn set_channel(iface: &str, channel: u8, band: Band) -> Result<()> {
     let freq = channel_to_freq_mhz(channel, band);
     let out = std::process::Command::new("iw")
@@ -237,7 +237,7 @@ fn set_channel(iface: &str, channel: u8, band: Band) -> Result<()> {
 }
 
 /// Open pcap capture with filter for all management frames
-#[cfg(target_os = "linux")]
+#[cfg(all(not(feature = "demo"), target_os = "linux"))]
 fn open_capture(iface: &str) -> Result<Capture<pcap::Active>> {
     let devices = Device::list().context("Failed to list pcap devices")?;
 
@@ -273,7 +273,7 @@ fn open_capture(iface: &str) -> Result<Capture<pcap::Active>> {
 
 /// Open a new per-session handshake capture file under ~/.smartdos/handshakes/.
 /// Returns the writer and its display path.
-#[cfg(target_os = "linux")]
+#[cfg(all(not(feature = "demo"), target_os = "linux"))]
 fn open_handshake_writer() -> Result<(crate::handshake::PcapWriter, String)> {
     let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
     let dir = std::path::PathBuf::from(home).join(".smartdos").join("handshakes");
@@ -286,7 +286,7 @@ fn open_handshake_writer() -> Result<(crate::handshake::PcapWriter, String)> {
 }
 
 /// Parse a beacon or probe response frame → returns AP info
-#[cfg(target_os = "linux")]
+#[cfg(all(not(feature = "demo"), target_os = "linux"))]
 fn parse_beacon_frame_raw(data: &[u8]) -> Option<AccessPoint> {
     let total_len = data.len();
 
@@ -411,7 +411,7 @@ fn parse_beacon_frame_raw(data: &[u8]) -> Option<AccessPoint> {
 }
 
 /// Decode RSN IE (tag 48) → "WPA2", "WPA3", "W2-Ent", "W2/TKIP", "OWE", etc.
-#[cfg(target_os = "linux")]
+#[cfg(all(not(feature = "demo"), target_os = "linux"))]
 fn parse_rsn_ie(ie: &[u8]) -> String {
     // Layout: 2B version | 4B group cipher | 2B pairwise count | N*4B pairwise | 2B AKM count | N*4B AKM
     if ie.len() < 8 {
@@ -475,7 +475,7 @@ fn parse_rsn_ie(ie: &[u8]) -> String {
 }
 
 /// Decode WPA vendor IE (OUI 00:50:F2 type 01) → "WPA", "WPA-E", "W1/T"
-#[cfg(target_os = "linux")]
+#[cfg(all(not(feature = "demo"), target_os = "linux"))]
 fn parse_wpa_ie(ie: &[u8]) -> String {
     // Layout: 4B OUI+type | 2B version | 4B mcast cipher | 2B ucast count | N*4B ucast | 2B AKM count | N*4B AKM
     if ie.len() < 14 {
@@ -528,7 +528,7 @@ fn parse_wpa_ie(ie: &[u8]) -> String {
 /// - Authentication (subtype 11): SA is client, DA is AP
 /// - Data frames (type 2): SA or DA could be a client
 /// Returns (ap_bssid, client)
-#[cfg(target_os = "linux")]
+#[cfg(all(not(feature = "demo"), target_os = "linux"))]
 fn parse_client_frame_raw(data: &[u8]) -> Option<(String, Client)> {
     let total_len = data.len();
 
@@ -684,7 +684,7 @@ fn parse_client_frame_raw(data: &[u8]) -> Option<(String, Client)> {
 }
 
 /// Parse radiotap header to get offset and signal, or return (0, 0) for raw 802.11
-#[cfg(target_os = "linux")]
+#[cfg(all(not(feature = "demo"), target_os = "linux"))]
 fn parse_radiotap_offset(data: &[u8]) -> (usize, i16) {
     if data.len() >= 4 && data[0] == 0 && data[1] == 0 {
         let rt_len = u16::from_le_bytes([data[2], data[3]]) as usize;
@@ -697,7 +697,7 @@ fn parse_radiotap_offset(data: &[u8]) -> (usize, i16) {
 }
 
 /// Extract channel frequency (MHz) from radiotap Channel field (present bit 3).
-#[cfg(target_os = "linux")]
+#[cfg(all(not(feature = "demo"), target_os = "linux"))]
 fn parse_radiotap_freq(data: &[u8]) -> Option<u32> {
     if data.len() < 8 || data[0] != 0 || data[1] != 0 {
         return None;
@@ -719,7 +719,7 @@ fn parse_radiotap_freq(data: &[u8]) -> Option<u32> {
 }
 
 /// Parse radiotap header to extract antenna signal (dBm)
-#[cfg(target_os = "linux")]
+#[cfg(all(not(feature = "demo"), target_os = "linux"))]
 fn parse_radiotap_signal(data: &[u8]) -> i16 {
     if data.len() < 8 {
         return 0;
@@ -770,7 +770,7 @@ fn parse_radiotap_signal(data: &[u8]) -> i16 {
     0
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(all(not(feature = "demo"), target_os = "linux"))]
 fn mac_to_string(bytes: &[u8]) -> String {
     if bytes.len() < 6 {
         return String::new();
@@ -836,10 +836,10 @@ mod tests {
     }
 }
 
-// ── Stub implementation (non-Linux / macOS dev) ───────────────────────────────
+// ── Demo implementation (--features demo or non-Linux) ───────────────────────
 
 /// Fake AP data: (bssid, ssid, channel, signal_dbm, encryption, band)
-#[cfg(not(target_os = "linux"))]
+#[cfg(any(feature = "demo", not(target_os = "linux")))]
 static FAKE_APS: &[(&str, &str, u8, i16, &str, Band)] = &[
     // 2.4 GHz
     ("AA:BB:CC:11:22:33", "HomeNetwork",        6,  -45, "WPA2",  Band::TwoGHz),
@@ -867,7 +867,7 @@ static FAKE_APS: &[(&str, &str, u8, i16, &str, Band)] = &[
 ];
 
 /// Fake clients: (ap_bssid, client_mac, signal_dbm, associated)
-#[cfg(not(target_os = "linux"))]
+#[cfg(any(feature = "demo", not(target_os = "linux")))]
 static FAKE_CLIENTS: &[(&str, &str, i16, bool)] = &[
     ("AA:BB:CC:11:22:33", "DE:AD:BE:EF:00:01", -52, true),
     ("AA:BB:CC:11:22:33", "DE:AD:BE:EF:00:02", -61, true),
@@ -887,7 +887,7 @@ static FAKE_CLIENTS: &[(&str, &str, i16, bool)] = &[
     ("77:88:99:AA:BB:CC", "DE:AD:BE:EF:01:06", -69, true),
 ];
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(any(feature = "demo", not(target_os = "linux")))]
 fn make_ap(bssid: &str, ssid: &str, channel: u8, signal_dbm: i16, encryption: &str, band: Band) -> AccessPoint {
     let signal_percent = if signal_dbm >= -30 {
         100
@@ -911,20 +911,18 @@ fn make_ap(bssid: &str, ssid: &str, channel: u8, signal_dbm: i16, encryption: &s
     }
 }
 
-#[cfg(not(target_os = "linux"))]
-pub fn start_scanner(
-    _iface: &str,
+#[cfg(any(feature = "demo", not(target_os = "linux")))]
+fn start_scanner_demo(
     event_tx: mpsc::Sender<ScannerEvent>,
-    _cmd_rx: mpsc::Receiver<ScannerCommand>,
     running: Arc<AtomicBool>,
     supports_5ghz: bool,
     supports_6ghz: bool,
 ) -> Result<std::thread::JoinHandle<()>> {
     let handle = std::thread::Builder::new()
-        .name("scanner-stub".into())
+        .name("scanner-demo".into())
         .spawn(move || {
             let _ = event_tx.send(ScannerEvent::Error(
-                "[STUB] Scanner started — no wireless hardware, using fake data".into(),
+                "[DEMO] Scanner started — using fake data".into(),
             ));
 
             let scan_channels = scan_channels_for(supports_5ghz, supports_6ghz);
@@ -966,11 +964,11 @@ pub fn start_scanner(
                 });
             }
 
-            // Build per-AP client list — mutable so we can apply churn each tick
-            let mut ap_clients: std::collections::HashMap<&str, Vec<Client>> =
+            // Build per-AP client list (owned keys so clients can move between APs)
+            let mut ap_clients: std::collections::HashMap<String, Vec<Client>> =
                 std::collections::HashMap::new();
             for (ap_bssid, mac, dbm, assoc) in FAKE_CLIENTS {
-                ap_clients.entry(ap_bssid).or_default().push(Client {
+                ap_clients.entry(ap_bssid.to_string()).or_default().push(Client {
                     mac: mac.to_string(),
                     signal_dbm: *dbm,
                     packets: 1,
@@ -979,6 +977,10 @@ pub fn start_scanner(
                     friendly_name: None,
                 });
             }
+
+            // Track mutable channel per simulated AP (band steering can shift these)
+            let mut ap_channels: std::collections::HashMap<String, u8> =
+                FAKE_APS.iter().map(|(bssid, _, ch, _, _, _)| (bssid.to_string(), *ch)).collect();
 
             let mut tick: u64 = 0;
             let mut channel_idx = 0usize;
@@ -1019,11 +1021,19 @@ pub fn start_scanner(
                             // Every 30s briefly disassociate then reassociate (simulates roam/reconnect)
                             client.associated = (sec + ci as u64) % 30 != 0;
                             let _ = event_tx.send(ScannerEvent::ClientUpdated {
-                                ap_bssid: ap_bssid.to_string(),
+                                ap_bssid: ap_bssid.clone(),
                                 client: client.clone(),
                             });
                         }
                     }
+
+                    stub_roam_clients(
+                        &mut ap_clients,
+                        &mut ap_channels,
+                        &event_tx,
+                        supports_5ghz,
+                        supports_6ghz,
+                    );
 
                     let _ = event_tx.send(ScannerEvent::Traffic(tick * 4 + 1));
                 }
@@ -1031,7 +1041,117 @@ pub fn start_scanner(
                 tick += 1;
             }
         })
-        .context("Failed to spawn scanner stub thread")?;
+        .context("Failed to spawn scanner demo thread")?;
 
     Ok(handle)
+}
+
+/// Probabilistic client roaming for the macOS stub.
+/// Called once per second. Each client has a ~5% chance of roaming.
+/// - 60%: hard roam — client moves to a different simulated AP
+/// - 40%: band steer — client's current AP shifts to a different channel
+#[cfg(any(feature = "demo", not(target_os = "linux")))]
+fn stub_roam_clients(
+    ap_clients: &mut std::collections::HashMap<String, Vec<Client>>,
+    ap_channels: &mut std::collections::HashMap<String, u8>,
+    event_tx: &mpsc::Sender<ScannerEvent>,
+    supports_5ghz: bool,
+    supports_6ghz: bool,
+) {
+    use rand::Rng;
+    let mut rng = rand::thread_rng();
+
+    // Collect bssids visible in this scan (filtered to enabled bands)
+    let visible_bssids: Vec<String> = FAKE_APS
+        .iter()
+        .filter(|(_, _, _, _, _, band)| match band {
+            Band::FiveGHz => supports_5ghz,
+            Band::SixGHz  => supports_6ghz,
+            Band::TwoGHz  => true,
+        })
+        .map(|(bssid, _, _, _, _, _)| bssid.to_string())
+        .collect();
+
+    if visible_bssids.len() < 2 {
+        return;
+    }
+
+    // Collect (bssid, mac) pairs for clients that will roam this tick
+    let roam_candidates: Vec<(String, String)> = ap_clients
+        .iter()
+        .flat_map(|(bssid, clients)| {
+            clients.iter().map(move |c| (bssid.clone(), c.mac.clone()))
+        })
+        .filter(|_| rng.gen_bool(0.05))
+        .collect();
+
+    for (old_bssid, mac) in roam_candidates {
+        let is_hard_roam = rng.gen_bool(0.60);
+
+        if is_hard_roam {
+            let other_bssids: Vec<&String> = visible_bssids
+                .iter()
+                .filter(|b| *b != &old_bssid)
+                .collect();
+            if other_bssids.is_empty() {
+                continue;
+            }
+            let new_bssid = other_bssids[rng.gen_range(0..other_bssids.len())].clone();
+
+            let client_opt = ap_clients
+                .get_mut(&old_bssid)
+                .and_then(|v| v.iter().position(|c| c.mac == mac).map(|i| v.remove(i)));
+            if let Some(mut client) = client_opt {
+                client.last_seen = Instant::now();
+                client.associated = true;
+                let new_ch = ap_channels.get(&new_bssid).copied().unwrap_or(6);
+                let _ = event_tx.send(ScannerEvent::ClientDiscovered {
+                    ap_bssid: new_bssid.clone(),
+                    client: client.clone(),
+                });
+                let _ = event_tx.send(ScannerEvent::Error(format!(
+                    "[stub] {} roamed {}→{} ch{}",
+                    mac, old_bssid, new_bssid, new_ch
+                )));
+                ap_clients.entry(new_bssid).or_default().push(client);
+            }
+        } else {
+            let ap_meta = FAKE_APS.iter().find(|(b, _, _, _, _, _)| *b == old_bssid);
+            if let Some((bssid, ssid, base_ch, base_dbm, enc, band)) = ap_meta {
+                let skip = match band {
+                    Band::FiveGHz => !supports_5ghz,
+                    Band::SixGHz  => !supports_6ghz,
+                    Band::TwoGHz  => false,
+                };
+                if skip {
+                    continue;
+                }
+                let old_ch = ap_channels.get(&old_bssid).copied().unwrap_or(*base_ch);
+                let new_ch = match band {
+                    Band::TwoGHz  => if old_ch == 1 { 6 } else if old_ch == 6 { 11 } else { 1 },
+                    Band::FiveGHz => if old_ch == 36 { 40 } else if old_ch == 40 { 44 } else { 36 },
+                    Band::SixGHz  => if old_ch == 5 { 37 } else if old_ch == 37 { 69 } else { 5 },
+                };
+                ap_channels.insert(old_bssid.clone(), new_ch);
+                let ap = make_ap(bssid, ssid, new_ch, *base_dbm, enc, *band);
+                let _ = event_tx.send(ScannerEvent::ApUpdated(ap));
+                let _ = event_tx.send(ScannerEvent::Error(format!(
+                    "[stub] {} band-steered ch{}→ch{}",
+                    old_bssid, old_ch, new_ch
+                )));
+            }
+        }
+    }
+}
+
+#[cfg(any(feature = "demo", not(target_os = "linux")))]
+pub fn start_scanner(
+    _iface: &str,
+    event_tx: mpsc::Sender<ScannerEvent>,
+    _cmd_rx: mpsc::Receiver<ScannerCommand>,
+    running: Arc<AtomicBool>,
+    supports_5ghz: bool,
+    supports_6ghz: bool,
+) -> Result<std::thread::JoinHandle<()>> {
+    start_scanner_demo(event_tx, running, supports_5ghz, supports_6ghz)
 }

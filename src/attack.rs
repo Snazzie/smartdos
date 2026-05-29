@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-#[cfg(target_os = "linux")]
+#[cfg(all(not(feature = "demo"), target_os = "linux"))]
 use pcap::{Capture, Device};
 use std::sync::mpsc;
 use std::sync::{
@@ -8,15 +8,15 @@ use std::sync::{
 };
 use std::time::Duration;
 
-#[cfg(target_os = "linux")]
+#[cfg(all(not(feature = "demo"), target_os = "linux"))]
 use crate::types::DeauthScope;
-#[cfg(target_os = "linux")]
+#[cfg(all(not(feature = "demo"), target_os = "linux"))]
 use crate::types::channel_to_freq_mhz;
 use crate::types::{AttackCommand, AttackEvent, AttackMode, AttackType, Band, Target};
 
 // ── Shared helpers ────────────────────────────────────────────────────────────
 
-#[cfg(target_os = "linux")]
+#[cfg(all(not(feature = "demo"), target_os = "linux"))]
 struct TargetState {
     bssid: String,
     #[allow(dead_code)]
@@ -29,7 +29,7 @@ struct TargetState {
     client_filter: Vec<String>,
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(all(not(feature = "demo"), target_os = "linux"))]
 impl TargetState {
     fn from_target(t: &Target) -> Self {
         TargetState {
@@ -45,7 +45,7 @@ impl TargetState {
     }
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(all(not(feature = "demo"), target_os = "linux"))]
 fn rebuild_target_states(old: &[TargetState], new_targets: &[Target]) -> Vec<TargetState> {
     new_targets
         .iter()
@@ -70,7 +70,7 @@ fn rebuild_target_states(old: &[TargetState], new_targets: &[Target]) -> Vec<Tar
 // ── Linux implementation ──────────────────────────────────────────────────────
 
 /// Start the attack orchestrator in a separate thread
-#[cfg(target_os = "linux")]
+#[cfg(all(not(feature = "demo"), target_os = "linux"))]
 pub fn start_attack(
     mon_iface: &str,
     targets: Vec<Target>,
@@ -333,7 +333,7 @@ pub fn start_attack(
     Ok(handle)
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(all(not(feature = "demo"), target_os = "linux"))]
 fn set_channel(iface: &str, channel: u8, band: Band) -> Result<()> {
     let freq = channel_to_freq_mhz(channel, band);
     let out = std::process::Command::new("iw")
@@ -351,7 +351,7 @@ fn set_channel(iface: &str, channel: u8, band: Band) -> Result<()> {
     Ok(())
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(all(not(feature = "demo"), target_os = "linux"))]
 fn open_packet_sender(iface: &str) -> Result<pcap::Capture<pcap::Active>> {
     let devices = Device::list().context("Failed to list pcap devices")?;
 
@@ -530,24 +530,24 @@ pub(crate) fn build_beacon_flood_frame(channel: u8, band: Band) -> Vec<u8> {
 
 // ── Senders (Linux pcap injection) ────────────────────────────────────────────
 
-#[cfg(target_os = "linux")]
+#[cfg(all(not(feature = "demo"), target_os = "linux"))]
 fn send_deauth_frame(cap: &mut pcap::Capture<pcap::Active>, bssid: &str) {
     let _ = cap.sendpacket(build_deauth_frame(bssid).as_slice());
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(all(not(feature = "demo"), target_os = "linux"))]
 fn send_client_deauth(cap: &mut pcap::Capture<pcap::Active>, ap_bssid: &str, client_mac: &str) {
     let (to_client, to_ap) = build_client_deauth_frames(ap_bssid, client_mac);
     let _ = cap.sendpacket(to_client.as_slice());
     let _ = cap.sendpacket(to_ap.as_slice());
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(all(not(feature = "demo"), target_os = "linux"))]
 fn send_auth_dos_frame(cap: &mut pcap::Capture<pcap::Active>, bssid: &str) {
     let _ = cap.sendpacket(build_auth_dos_frame(bssid).as_slice());
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(all(not(feature = "demo"), target_os = "linux"))]
 fn send_beacon_flood_frame(cap: &mut pcap::Capture<pcap::Active>, channel: u8, band: Band) {
     let _ = cap.sendpacket(build_beacon_flood_frame(channel, band).as_slice());
 }
@@ -566,11 +566,10 @@ pub fn reason_code_string(code: u16) -> &'static str {
     }
 }
 
-// ── Stub implementation (non-Linux / macOS dev) ───────────────────────────────
+// ── Demo implementation (--features demo or non-Linux) ───────────────────────
 
-#[cfg(not(target_os = "linux"))]
-pub fn start_attack(
-    _mon_iface: &str,
+#[cfg(any(feature = "demo", not(target_os = "linux")))]
+fn start_attack_demo(
     targets: Vec<Target>,
     mode: AttackMode,
     attack_type: AttackType,
@@ -581,10 +580,10 @@ pub fn start_attack(
     running: Arc<AtomicBool>,
 ) -> Result<std::thread::JoinHandle<()>> {
     let handle = std::thread::Builder::new()
-        .name("attack-stub".into())
+        .name("attack-demo".into())
         .spawn(move || {
             let _ = attack_tx.send(AttackEvent::Error(format!(
-                "[STUB] Attack started: {} {} mode, {} targets",
+                "[DEMO] Attack started: {} {} mode, {} targets",
                 attack_type.label(),
                 if mode == AttackMode::RoundRobin { "round-robin" } else { "parallel" },
                 targets.len()
@@ -649,9 +648,24 @@ pub fn start_attack(
                 std::thread::sleep(burst_interval);
             }
         })
-        .context("Failed to spawn attack stub thread")?;
+        .context("Failed to spawn attack demo thread")?;
 
     Ok(handle)
+}
+
+#[cfg(any(feature = "demo", not(target_os = "linux")))]
+pub fn start_attack(
+    _mon_iface: &str,
+    targets: Vec<Target>,
+    mode: AttackMode,
+    attack_type: AttackType,
+    burst_size: u16,
+    send_interval_ms: u64,
+    attack_tx: mpsc::Sender<AttackEvent>,
+    cmd_rx: mpsc::Receiver<AttackCommand>,
+    running: Arc<AtomicBool>,
+) -> Result<std::thread::JoinHandle<()>> {
+    start_attack_demo(targets, mode, attack_type, burst_size, send_interval_ms, attack_tx, cmd_rx, running)
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────

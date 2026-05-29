@@ -4,6 +4,9 @@ version = "0.1.0"
 edition = "2021"
 description = "Ethical hacking wireless pentest tool — AP scanning, target management, and deauth attack orchestration"
 
+[features]
+demo = []
+
 [dependencies]
 ratatui = { version = "0.29", features = ["all-widgets"] }
 crossterm = "0.28"
