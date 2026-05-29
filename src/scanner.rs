@@ -108,9 +108,6 @@ pub fn start_scanner(
                                 existing.packets += 1;
                                 existing.last_seen = Instant::now();
                                 existing.encryption = ap.encryption;
-                                existing
-                                    .clients
-                                    .retain(|c| c.last_seen.elapsed() < Duration::from_secs(120));
                                 let _ = event_tx.send(ScannerEvent::ApUpdated(existing.clone()));
                             } else {
                                 let mut new_ap = ap;
@@ -150,12 +147,7 @@ pub fn start_scanner(
 
                             // Also update the AP's client list
                             if let Some(ap) = ap_map.get_mut(&ap_bssid) {
-                                let ap_clients = clients
-                                    .values()
-                                    .filter(|c| c.last_seen.elapsed() < Duration::from_secs(120))
-                                    .cloned()
-                                    .collect();
-                                ap.clients = ap_clients;
+                                ap.clients = clients.values().cloned().collect();
                             }
                         }
                     }
@@ -166,29 +158,8 @@ pub fn start_scanner(
                     }
                 }
 
-                // Periodic cleanup of stale APs and clients
+                // Periodic traffic reporting
                 if last_cleanup.elapsed() >= Duration::from_secs(30) {
-                    let stale_bssids: Vec<String> = ap_map
-                        .iter()
-                        .filter(|(_, ap)| ap.last_seen.elapsed() > Duration::from_secs(60))
-                        .map(|(bssid, _)| bssid.clone())
-                        .collect();
-
-                    for bssid in &stale_bssids {
-                        ap_map.remove(bssid);
-                        client_map.remove(bssid);
-                        let _ = event_tx.send(ScannerEvent::ApGone(bssid.clone()));
-                    }
-
-                    // Clean up stale clients from remaining APs
-                    for (bssid, ap) in &mut ap_map {
-                        ap.clients
-                            .retain(|c| c.last_seen.elapsed() < Duration::from_secs(120));
-                        if let Some(cm) = client_map.get_mut(bssid) {
-                            cm.retain(|_, c| c.last_seen.elapsed() < Duration::from_secs(120));
-                        }
-                    }
-
                     let _ = event_tx.send(ScannerEvent::Traffic(total_packets));
                     total_packets = 0;
                     last_cleanup = Instant::now();

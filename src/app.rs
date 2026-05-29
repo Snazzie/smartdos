@@ -72,8 +72,17 @@ fn process_scanner_events(app: &mut App) {
         match app.scanner_rx.try_recv() {
             Ok(event) => match event {
                 ScannerEvent::ApDiscovered(ap) => {
-                    app.ap_list.push(ap);
-                    app.ap_list.sort_by(|a, b| b.signal_dbm.cmp(&a.signal_dbm));
+                    if let Some(existing) = app.ap_list.iter_mut().find(|a| a.bssid == ap.bssid) {
+                        existing.signal_dbm = ap.signal_dbm;
+                        existing.signal_percent = ap.signal_percent;
+                        existing.band = ap.band;
+                        existing.channel = ap.channel;
+                        existing.encryption = ap.encryption;
+                        existing.last_seen = ap.last_seen;
+                    } else {
+                        app.ap_list.push(ap);
+                        app.ap_list.sort_by(|a, b| b.signal_dbm.cmp(&a.signal_dbm));
+                    }
                 }
                 ScannerEvent::ApUpdated(ap) => {
                     if let Some(existing) = app.ap_list.iter_mut().find(|a| a.bssid == ap.bssid) {
@@ -127,8 +136,8 @@ fn process_scanner_events(app: &mut App) {
                         }
                     }
                 }
-                ScannerEvent::ApGone(bssid) => {
-                    app.ap_list.retain(|a| a.bssid != bssid);
+                ScannerEvent::ApGone(_bssid) => {
+                    // APs persist until user clears with 'r'
                 }
                 ScannerEvent::ClientDiscovered { ap_bssid, client } => {
                     let fname = app.client_names.get(&client.mac).cloned();

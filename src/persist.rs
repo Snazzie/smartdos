@@ -38,8 +38,10 @@ struct SavedAp {
 pub fn save_ap_list(aps: &[AccessPoint]) -> Result<()> {
     let path = aps_path();
     let _ = std::fs::create_dir_all(path.parent().unwrap());
+    let mut seen = std::collections::HashSet::new();
     let saved: Vec<SavedAp> = aps
         .iter()
+        .filter(|a| seen.insert(a.bssid.clone()))
         .map(|a| SavedAp {
             bssid: a.bssid.clone(),
             ssid: a.ssid.clone(),
@@ -65,8 +67,10 @@ pub fn load_ap_list() -> Vec<AccessPoint> {
         Err(_) => return Vec::new(),
     };
     let now = Instant::now();
+    let mut seen = std::collections::HashSet::new();
     saved
         .into_iter()
+        .filter(|s| seen.insert(s.bssid.clone()))
         .map(|s| AccessPoint {
             bssid: s.bssid,
             ssid: s.ssid,

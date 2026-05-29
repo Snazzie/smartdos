@@ -395,7 +395,7 @@ fn handle_key_event(app: &mut App, key: KeyEvent) {
                 }
             }
         },
-        KeyCode::Tab | KeyCode::Right => {
+        KeyCode::Tab => {
             app.tab_selection = match app.tab_selection {
                 TabSelection::ApList => TabSelection::TargetList,
                 TabSelection::TargetList => TabSelection::ClientList,
@@ -408,17 +408,24 @@ fn handle_key_event(app: &mut App, key: KeyEvent) {
                 app.selected_target_idx = Some(0);
             }
         }
-        KeyCode::Left => {
-            app.tab_selection = match app.tab_selection {
-                TabSelection::ApList => TabSelection::ClientList,
-                TabSelection::TargetList => TabSelection::ApList,
-                TabSelection::ClientList => TabSelection::TargetList,
-            };
-            if app.tab_selection == TabSelection::ClientList {
-                app.selected_client_idx = Some(0);
+        KeyCode::Right => {
+            if app.tab_selection == TabSelection::ApList {
+                app.tab_selection = TabSelection::TargetList;
+                if !app.targets.is_empty() {
+                    app.selected_target_idx = Some(0);
+                }
+            } else if app.tab_selection == TabSelection::TargetList {
+                app.tab_selection = TabSelection::ApList;
             }
-            if app.tab_selection == TabSelection::TargetList && !app.targets.is_empty() {
-                app.selected_target_idx = Some(0);
+        }
+        KeyCode::Left => {
+            if app.tab_selection == TabSelection::TargetList {
+                app.tab_selection = TabSelection::ApList;
+            } else if app.tab_selection == TabSelection::ApList {
+                app.tab_selection = TabSelection::TargetList;
+                if !app.targets.is_empty() {
+                    app.selected_target_idx = Some(0);
+                }
             }
         }
         KeyCode::Char('c') | KeyCode::Char('C') => {
