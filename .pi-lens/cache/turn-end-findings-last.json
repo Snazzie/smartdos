@@ -1,0 +1,4 @@
+{
+  "signature": "src/app.rs|src/ui.rs::Unresolved from this turn — src/ui.rs:\n🔴 STOP — 7 issue(s) must be fixed:\n  L7: unused import: `Clear`\n    💡 Fix: Remove the unused declaration or rename with '_' prefix if intentionally unused.\n  L29: this function takes 3 arguments but 2 arguments were supplied\n  L316: `if` and `else` have incompatible types\n  L113: `match` arms have incompatible types\n  L165: non-exhaustive patterns: `types::TabSelection::ClientList` not covered\n  L187: non-exhaustive patterns: `types::TabSelection::ClientList` not covered\n  L209: non-exhaustive patterns: `types::TabSelection::ClientList` not covered",
+  "sessionId": "lens-mp2gys6r-5f4d17ae"
+}
