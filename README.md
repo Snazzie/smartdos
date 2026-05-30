@@ -82,7 +82,8 @@
 | **Monitor Mode**         | Auto-enables via `airmon-ng` or falls back to `iw`                                  |
 | **Live Counters**        | Real-time deauth frame counters per target                                           |
 | **Event Log**            | Scrollable log panel showing actions and errors                                      |
-| **3-Tab Navigation**     | AP list / Target list / Client list panels                                           |
+| **Full-screen Events**   | `Tab` expands the event log to the whole screen (scrollable); `Tab`/`Esc` to return  |
+| **Panel Navigation**     | `←/→` and `c` switch between AP list / Target list / Client list panels               |
 | **Settings Overlay**     | In-app overlay to tune burst size and send interval without restarting               |
 | **Clear Scan Results**   | `R` clears AP list and resets discovery state mid-session                            |
 
@@ -147,7 +148,7 @@ sudo ./target/release/smartdos wlan0mon
 | --------------- | ------------------------------------------------------------ |
 | `↑` / `↓`       | Navigate list                                                |
 | `←` / `→`       | Switch panels                                                |
-| `Tab`           | Cycle through AP / Target / Client panels                    |
+| `Tab`           | Open full-screen Events page (`Tab`/`Esc` to return; `↑↓` / `PgUp`·`PgDn` scroll) |
 | `t`             | Toggle target — add/remove selected AP, or target selected client (in client view) |
 | `d`             | Remove selected target                                       |
 | `Space`         | Enable/disable selected target                               |

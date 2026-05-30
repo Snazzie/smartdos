@@ -26,7 +26,7 @@ use std::io::{self};
 use std::sync::{atomic::Ordering, Arc};
 use std::sync::atomic::AtomicBool;
 use signal_hook::{consts::{SIGINT, SIGTERM}, iterator::Signals};
-use types::{App, InputMode, TabSelection, TargetSubSection, WirelessInterface};
+use types::{App, InputMode, PageView, TabSelection, TargetSubSection, WirelessInterface};
 
 /// Global indices of targets belonging to the active sub-section
 fn target_sub_indices(app: &App) -> Vec<usize> {
@@ -159,7 +159,7 @@ fn main() -> Result<()> {
         _             => "2.4 GHz only",
     };
     app.add_log(format!("Band support: {}", band_str));
-    app.add_log("↑↓ nav | t target/client | c clients | r clear scan | I ifaces | Tab/←→ switch | M mode | S start/stop | Q quit".to_string());
+    app.add_log("↑↓ nav | t target/client | c clients | r clear scan | I ifaces | Tab events | ←→ switch | M mode | S start/stop | Q quit".to_string());
 
     // Offer saved list at startup; user picks one or presses Esc to start fresh
     app::open_list_picker(&mut app);
@@ -390,6 +390,29 @@ fn handle_key_event(app: &mut App, key: KeyEvent) {
         return;
     }
 
+    // Full-screen Events page — read-only viewer: scroll + exit only.
+    // (events_scroll is counted from the newest line; render clamps to viewport.)
+    if app.page_view == PageView::Events {
+        let max_scroll = app.log_messages.len().saturating_sub(1);
+        match key.code {
+            KeyCode::Tab | KeyCode::Esc => app.page_view = PageView::Dashboard,
+            KeyCode::Up => app.events_scroll = (app.events_scroll + 1).min(max_scroll),
+            KeyCode::Down => app.events_scroll = app.events_scroll.saturating_sub(1),
+            KeyCode::PageUp => app.events_scroll = (app.events_scroll + 10).min(max_scroll),
+            KeyCode::PageDown => app.events_scroll = app.events_scroll.saturating_sub(10),
+            KeyCode::Home => app.events_scroll = max_scroll,
+            KeyCode::End => app.events_scroll = 0,
+            KeyCode::Char('q') | KeyCode::Char('Q') => {
+                if app.attack_running {
+                    app::stop_attack(app);
+                }
+                app.running.store(false, std::sync::atomic::Ordering::Relaxed);
+            }
+            _ => {}
+        }
+        return;
+    }
+
     match key.code {
         KeyCode::Char('q') | KeyCode::Char('Q') => {
             if app.attack_running {
@@ -462,18 +485,9 @@ fn handle_key_event(app: &mut App, key: KeyEvent) {
             }
         },
         KeyCode::Tab => {
-            app.tab_selection = match app.tab_selection {
-                TabSelection::ApList => TabSelection::TargetList,
-                TabSelection::TargetList => TabSelection::ClientList,
-                TabSelection::ClientList => TabSelection::ApList,
-            };
-            if app.tab_selection == TabSelection::ClientList {
-                app.selected_client_idx = Some(0);
-            }
-            if app.tab_selection == TabSelection::TargetList {
-                let sub_indices = target_sub_indices(&app);
-                app.selected_target_idx = sub_indices.first().copied();
-            }
+            // Tab opens the full-screen Events page (Tab/Esc returns).
+            app.page_view = PageView::Events;
+            app.events_scroll = 0;
         }
         KeyCode::Right => {
             // Cycle: ApList → TargetList(Clients) → TargetList(Aps) → ApList

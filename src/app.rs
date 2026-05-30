@@ -25,11 +25,13 @@ pub fn update(app: &mut App) {
 
     rotate_log_if_needed(app);
 
-    // Update FPS counter
+    // Update FPS counter + CPU usage (both on ~1s cadence)
     app.fps_counter.0 += 1;
     if app.fps_counter.1.elapsed() >= Duration::from_secs(1) {
         app.fps = app.fps_counter.0 as f64 / app.fps_counter.1.elapsed().as_secs_f64();
         app.fps_counter = (0, Instant::now());
+        app.sys.refresh_cpu_all();
+        app.cpu_usage = app.sys.global_cpu_usage();
     }
 }
 

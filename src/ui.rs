@@ -10,25 +10,43 @@ use ratatui::{
 };
 
 use crate::oui;
-use crate::types::{App, AttackMode, AttackType, Band, DeauthScope, InputMode, TabSelection, TargetSubSection};
+use crate::types::{App, AttackMode, AttackType, Band, DeauthScope, InputMode, PageView, TabSelection, TargetSubSection};
 
 pub fn render(frame: &mut Frame, app: &mut App) {
     let area = frame.area();
 
-    let main_layout = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(3),
-            Constraint::Min(10),
-            Constraint::Length(7),
-            Constraint::Length(3),
-        ])
-        .split(area);
+    match app.page_view {
+        PageView::Dashboard => {
+            let main_layout = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([
+                    Constraint::Length(3),
+                    Constraint::Min(10),
+                    Constraint::Length(7),
+                    Constraint::Length(3),
+                ])
+                .split(area);
 
-    render_top_bar(frame, app, main_layout[0]);
-    render_body(frame, app, main_layout[1]);
-    render_logs(frame, app, main_layout[2]);
-    render_footer(frame, app, main_layout[3]);
+            render_top_bar(frame, app, main_layout[0]);
+            render_body(frame, app, main_layout[1]);
+            render_logs(frame, app, main_layout[2]);
+            render_footer(frame, app, main_layout[3]);
+        }
+        PageView::Events => {
+            let layout = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([
+                    Constraint::Length(3),
+                    Constraint::Min(1),
+                    Constraint::Length(3),
+                ])
+                .split(area);
+
+            render_top_bar(frame, app, layout[0]);
+            render_events_fullscreen(frame, app, layout[1]);
+            render_footer(frame, app, layout[2]);
+        }
+    }
 
     if app.list_picker_open {
         render_list_picker(frame, app, area);
@@ -69,6 +87,15 @@ fn render_top_bar(frame: &mut Frame, app: &App, area: Rect) {
         ap_count, client_count, target_count, total_deauth
     );
 
+    let cpu_str = format!(" CPU:{:.0}% ", app.cpu_usage);
+    let cpu_color = if app.cpu_usage >= 90.0 {
+        Color::Red
+    } else if app.cpu_usage >= 70.0 {
+        Color::Yellow
+    } else {
+        Color::Gray
+    };
+
     let title_style = if app.attack_running {
         Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)
     } else {
@@ -96,9 +123,10 @@ fn render_top_bar(frame: &mut Frame, app: &App, area: Rect) {
         },
     );
     let right = Span::styled(stats, Style::default().fg(Color::Gray));
+    let cpu = Span::styled(cpu_str, Style::default().fg(cpu_color));
     let sep = Span::raw("  │  ");
 
-    let text = Text::from(Line::from(vec![left, sep.clone(), center, sep, right]));
+    let text = Text::from(Line::from(vec![left, sep.clone(), center, sep.clone(), right, sep, cpu]));
     frame.render_widget(Paragraph::new(text).style(Style::default()), inner);
 }
 
@@ -709,25 +737,7 @@ fn render_logs(frame: &mut Frame, app: &App, area: Rect) {
         .iter()
         .rev()
         .take(max_log_lines)
-        .map(|msg| {
-            let color = if msg.contains("Error") || msg.contains("error") || msg.contains("Failed")
-            {
-                Color::Red
-            } else if msg.starts_with("✓") {
-                Color::Green
-            } else if msg.contains("start") || msg.contains("Start") {
-                Color::Green
-            } else if msg.contains("Target")
-                || msg.contains("deauth")
-                || msg.contains("Follow")
-                || msg.contains("follow")
-            {
-                Color::Yellow
-            } else {
-                Color::Gray
-            };
-            Line::from(Span::styled(msg, Style::default().fg(color)))
-        })
+        .map(|msg| Line::from(Span::styled(msg, Style::default().fg(event_color(msg)))))
         .collect();
 
     frame.render_widget(Paragraph::new(Text::from(log_entries)), log_inner);
@@ -813,6 +823,68 @@ fn render_logs(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(ctrl_block, log_layout[1]);
 }
 
+/// Map an event-log message to its display color. Shared by the dashboard log
+/// panel and the full-screen Events page.
+fn event_color(msg: &str) -> Color {
+    if msg.contains("Error") || msg.contains("error") || msg.contains("Failed") {
+        Color::Red
+    } else if msg.starts_with("✓") {
+        Color::Green
+    } else if msg.contains("start") || msg.contains("Start") {
+        Color::Green
+    } else if msg.contains("Target")
+        || msg.contains("deauth")
+        || msg.contains("Follow")
+        || msg.contains("follow")
+    {
+        Color::Yellow
+    } else {
+        Color::Gray
+    }
+}
+
+/// Full-screen Events page: the whole body is one scrollable event log, newest
+/// at the bottom (tail-style). `events_scroll` counts lines up from the newest.
+fn render_events_fullscreen(frame: &mut Frame, app: &mut App, area: Rect) {
+    let block = Block::default()
+        .title(format!(" Events ({}) ", app.log_messages.len()))
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(Color::Cyan));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let total = app.log_messages.len();
+    let viewport = inner.height as usize;
+    if total == 0 || viewport == 0 {
+        return;
+    }
+
+    // Clamp the scroll so the window never runs past the start of history.
+    app.events_scroll = app.events_scroll.min(total.saturating_sub(viewport));
+    let end = total.saturating_sub(app.events_scroll);
+    let start = end.saturating_sub(viewport);
+
+    let lines: Vec<Line> = app.log_messages[start..end]
+        .iter()
+        .map(|msg| Line::from(Span::styled(msg.as_str(), Style::default().fg(event_color(msg)))))
+        .collect();
+    frame.render_widget(Paragraph::new(Text::from(lines)), inner);
+
+    if total > viewport {
+        // Scrollbar position is the window's TOP index (`start`), not the
+        // bottom-counted `events_scroll`, which would invert the thumb.
+        let mut state = ScrollbarState::new(total).position(start);
+        let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
+            .begin_symbol(None)
+            .end_symbol(None)
+            .track_symbol(Some("│"))
+            .thumb_symbol("█");
+        let sb_area = area.inner(Margin { vertical: 1, horizontal: 0 });
+        frame.render_stateful_widget(scrollbar, sb_area, &mut state);
+    }
+}
+
 /// Footer: keybindings (or input prompt when in text-entry mode)
 fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
     if app.input_mode != InputMode::Normal {
@@ -851,6 +923,27 @@ fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
         v.push(Span::raw(format!("{} ", label)));
     };
 
+    // Full-screen Events page has its own (scroll-oriented) keybinding hints.
+    if app.page_view == PageView::Events {
+        add(&mut spans, "↑↓", "scroll");
+        add(&mut spans, "PgUp/PgDn", "page");
+        add(&mut spans, "Home/End", "ends");
+        add(&mut spans, "Tab/Esc", "back");
+        add(&mut spans, "Q", "quit");
+
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .border_style(Style::default().fg(Color::DarkGray));
+        let inner = block.inner(area);
+        frame.render_widget(
+            Paragraph::new(Text::from(Line::from(spans))).style(Style::default()),
+            inner,
+        );
+        frame.render_widget(block, area);
+        return;
+    }
+
     match app.tab_selection {
         TabSelection::ApList => {
             add(&mut spans, "↑↓", "nav");
@@ -876,7 +969,7 @@ fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
     add(&mut spans, "L", "load list");
     add(&mut spans, "I", "ifaces");
     add(&mut spans, "G", "settings");
-    add(&mut spans, "Tab", "switch");
+    add(&mut spans, "Tab", "events");
     add(&mut spans, "A", "type");
     add(&mut spans, "M", "mode");
     add(&mut spans, "P", "pursuit");

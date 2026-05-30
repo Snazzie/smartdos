@@ -5,6 +5,7 @@ use std::sync::atomic::AtomicBool;
 use std::sync::mpsc;
 use std::sync::Arc;
 use std::time::Instant;
+use sysinfo::System;
 
 /// Channel hopping config
 pub const CHANNELS_2GHZ: &[u8] = &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11];
@@ -178,6 +179,13 @@ pub enum AppState {
     Attacking,
 }
 
+/// Which whole-page view is shown: the normal dashboard or full-screen Events
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum PageView {
+    Dashboard,
+    Events,
+}
+
 /// Commands from the scanner thread to the main thread
 #[derive(Debug, Clone)]
 pub enum ScannerEvent {
@@ -260,6 +268,8 @@ pub struct App {
     pub fps_counter: (u64, Instant),
     pub fps: f64,
     pub tab_selection: TabSelection,
+    pub page_view: PageView,
+    pub events_scroll: usize,
     pub scroll_offset: usize,
     pub target_scroll_offset: usize,
     pub channel_hopping: bool,
@@ -281,6 +291,8 @@ pub struct App {
     pub list_picker_idx: usize,
     pub target_sub_section: TargetSubSection,
     pub txpower_dbm: Option<i32>,
+    pub cpu_usage: f32,
+    pub sys: System,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -336,6 +348,8 @@ impl App {
             fps_counter: (0, Instant::now()),
             fps: 0.0,
             tab_selection: TabSelection::ApList,
+            page_view: PageView::Dashboard,
+            events_scroll: 0,
             scroll_offset: 0,
             target_scroll_offset: 0,
             channel_hopping: true,
@@ -357,6 +371,8 @@ impl App {
             list_picker_idx: 0,
             target_sub_section: TargetSubSection::Aps,
             txpower_dbm: None,
+            cpu_usage: 0.0,
+            sys: System::new_all(),
         };
 
         (app, scanner_tx)
