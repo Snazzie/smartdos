@@ -155,8 +155,16 @@ fn render_ap_list(frame: &mut Frame, app: &App, area: Rect) {
         Style::default().fg(Color::DarkGray)
     };
 
+    let filter_title = if !app.ap_filter.is_empty() {
+        format!(" Access Points [/{}] ", app.ap_filter)
+    } else if app.input_mode == crate::types::InputMode::ApFilter {
+        " Access Points [/] ".to_string()
+    } else {
+        " Access Points ".to_string()
+    };
+
     let block = Block::default()
-        .title(" Access Points ")
+        .title(filter_title)
         .title_alignment(Alignment::Left)
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
@@ -165,6 +173,9 @@ fn render_ap_list(frame: &mut Frame, app: &App, area: Rect) {
     let inner = block.inner(area);
     let visible_height = (inner.height as usize).saturating_sub(2);
     let scroll_offset = app.scroll_offset;
+
+    // Apply SSID/BSSID filter
+    let visible_indices = app.visible_ap_indices();
 
     let header_cells = ["SSID", "BSSID", "CH", "dBm", "Enc", "Cli", "Rate"]
         .iter()
@@ -179,14 +190,13 @@ fn render_ap_list(frame: &mut Frame, app: &App, area: Rect) {
         .height(1)
         .style(Style::default().bg(Color::Blue));
 
-    let rows: Vec<Row> = app
-        .ap_list
+    // Scroll offset maps into the filtered list, not the full ap_list
+    let rows: Vec<Row> = visible_indices
         .iter()
         .skip(scroll_offset)
         .take(visible_height)
-        .enumerate()
-        .map(|(display_idx, ap)| {
-            let global_idx = scroll_offset + display_idx;
+        .map(|&global_idx| {
+            let ap = &app.ap_list[global_idx];
             let is_target = app.is_target(&ap.bssid);
             let is_selected =
                 global_idx == app.selected_ap_idx && app.tab_selection == TabSelection::ApList;
@@ -888,11 +898,32 @@ fn render_events_fullscreen(frame: &mut Frame, app: &mut App, area: Rect) {
 
 /// Footer: keybindings (or input prompt when in text-entry mode)
 fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
+    if app.input_mode == InputMode::ApFilter {
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .border_style(Style::default().fg(Color::Yellow));
+        let inner = block.inner(area);
+        frame.render_widget(block, area);
+        let line = Line::from(vec![
+            Span::styled(" Filter: ", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+            Span::styled(app.ap_filter.clone(), Style::default().fg(Color::White)),
+            Span::styled("█", Style::default().fg(Color::Yellow)),
+            Span::raw("   "),
+            Span::styled(" Enter ", Style::default().fg(Color::DarkGray)),
+            Span::raw("keep  "),
+            Span::styled(" Esc ", Style::default().fg(Color::DarkGray)),
+            Span::raw("clear"),
+        ]);
+        frame.render_widget(Paragraph::new(Text::from(line)), inner);
+        return;
+    }
+
     if app.input_mode != InputMode::Normal {
         let label = match app.input_mode {
             InputMode::SaveListName => "Save list name: ",
             InputMode::ClientRename => "Rename client:  ",
-            InputMode::Normal => unreachable!(),
+            InputMode::Normal | InputMode::ApFilter => unreachable!(),
         };
         let block = Block::default()
             .borders(Borders::ALL)
@@ -950,6 +981,7 @@ fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
             add(&mut spans, "↑↓", "nav");
             add(&mut spans, "t", "target");
             add(&mut spans, "c", "clients+focus");
+            add(&mut spans, "/", "filter");
             add(&mut spans, "r", "clear scan");
         }
         TabSelection::TargetList => {

@@ -25,7 +25,10 @@ pub fn run_settings_overlay<B: Backend>(
     terminal: &mut Terminal<B>,
     burst_size: u16,
     send_interval_ms: u64,
-) -> Result<Option<(u16, u64)>> {
+) -> Result<Option<(u16, u64)>>
+where
+    B::Error: Send + Sync + 'static,
+{
     let mut state = SettingsState::new(burst_size, send_interval_ms);
 
     loop {

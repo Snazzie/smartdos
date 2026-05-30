@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 
 use crate::types::{AccessPoint, Band, Client, ScannerCommand, ScannerEvent, CHANNEL_HOP_MS, scan_channels_for};
 #[cfg(all(not(feature = "demo"), target_os = "linux"))]
-use crate::types::{channel_to_freq_mhz, freq_to_band};
+use crate::types::{channel_to_freq_mhz, freq_to_band, freq_to_channel};
 
 // ── Linux implementation ──────────────────────────────────────────────────────
 
@@ -407,17 +407,24 @@ fn parse_beacon_frame_raw(data: &[u8]) -> Option<AccessPoint> {
         return None;
     }
 
-    // Determine band: prefer radiotap frequency, fall back to channel IEs.
-    // Use HT Operation (tag 61) primary channel when DS Parameter Set (tag 3) is absent —
-    // 5GHz APs commonly omit tag 3, leaving channel=0 which would falsely map to 2.4GHz.
-    let effective_channel = if channel != 0 { channel } else { ht_channel };
-    let band = parse_radiotap_freq(data)
+    // Determine band and channel.
+    // Priority: radiotap frequency > DS Parameter Set (tag 3) > HT Operation (tag 61).
+    // 5GHz APs often omit tag 3; WiFi 6 APs sometimes omit both — fall back to radiotap.
+    let radiotap_freq = parse_radiotap_freq(data);
+    let band = radiotap_freq
         .map(freq_to_band)
         .unwrap_or_else(|| {
-            if effective_channel > 14 { Band::FiveGHz }
-            else if effective_channel != 0 { Band::TwoGHz }
-            else { Band::TwoGHz } // unknown channel — assume 2.4GHz
+            let ch = if channel != 0 { channel } else { ht_channel };
+            if ch > 14 { Band::FiveGHz } else { Band::TwoGHz }
         });
+    // Channel: prefer tag 3 / tag 61 IEs; fall back to frequency→channel conversion
+    let effective_channel = if channel != 0 {
+        channel
+    } else if ht_channel != 0 {
+        ht_channel
+    } else {
+        radiotap_freq.map(freq_to_channel).unwrap_or(0)
+    };
 
     let signal_percent = if signal_dbm >= -30 {
         100

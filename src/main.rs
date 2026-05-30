@@ -196,7 +196,10 @@ fn activate_monitor(iface: &str) -> String {
     }
 }
 
-fn run_tui<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> Result<()> {
+fn run_tui<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> Result<()>
+where
+    B::Error: Send + Sync + 'static,
+{
     let tick_rate = std::time::Duration::from_millis(50);
 
     loop {
@@ -330,6 +333,54 @@ fn reconfigure_adapters(app: &mut App, listen: String, attack: String, txpower: 
 }
 
 fn handle_key_event(app: &mut App, key: KeyEvent) {
+    // AP filter mode — intercept typing; Up/Down still navigate the filtered list
+    if app.input_mode == InputMode::ApFilter {
+        match key.code {
+            KeyCode::Char(c) => {
+                app.ap_filter.push(c);
+                // snap selection to first visible AP
+                let vis = app.visible_ap_indices();
+                app.selected_ap_idx = vis.first().copied().unwrap_or(0);
+                app.scroll_offset = app.selected_ap_idx;
+            }
+            KeyCode::Backspace => {
+                app.ap_filter.pop();
+                let vis = app.visible_ap_indices();
+                app.selected_ap_idx = vis.first().copied().unwrap_or(0);
+                app.scroll_offset = app.selected_ap_idx;
+            }
+            KeyCode::Up => {
+                let vis = app.visible_ap_indices();
+                if let Some(pos) = vis.iter().position(|&i| i == app.selected_ap_idx) {
+                    if pos > 0 {
+                        app.selected_ap_idx = vis[pos - 1];
+                        app.scroll_offset = app.scroll_offset.min(app.selected_ap_idx);
+                    }
+                }
+            }
+            KeyCode::Down => {
+                let vis = app.visible_ap_indices();
+                if let Some(pos) = vis.iter().position(|&i| i == app.selected_ap_idx) {
+                    if pos + 1 < vis.len() {
+                        app.selected_ap_idx = vis[pos + 1];
+                    }
+                }
+            }
+            KeyCode::Enter => {
+                // keep filter, exit typing mode
+                app.input_mode = InputMode::Normal;
+            }
+            KeyCode::Esc => {
+                app.ap_filter.clear();
+                app.input_mode = InputMode::Normal;
+                app.selected_ap_idx = 0;
+                app.scroll_offset = 0;
+            }
+            _ => {}
+        }
+        return;
+    }
+
     // Text input mode — intercept all keys
     if app.input_mode != InputMode::Normal {
         match key.code {
@@ -353,7 +404,7 @@ fn handle_key_event(app: &mut App, key: KeyEvent) {
                             app::set_client_friendly_name(app, &mac, buf);
                         }
                     }
-                    InputMode::Normal => {}
+                    InputMode::Normal | InputMode::ApFilter => {}
                 }
             }
             KeyCode::Esc => {
@@ -688,6 +739,12 @@ fn handle_key_event(app: &mut App, key: KeyEvent) {
         }
         KeyCode::Char('r') | KeyCode::Char('R') => {
             app::clear_scan_results(app);
+            app.ap_filter.clear();
+        }
+        KeyCode::Char('/') => {
+            if app.tab_selection == TabSelection::ApList {
+                app.input_mode = InputMode::ApFilter;
+            }
         }
         KeyCode::Char('w') | KeyCode::Char('W') => {
             app.input_mode = InputMode::SaveListName;

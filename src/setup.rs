@@ -40,7 +40,10 @@ impl SetupState {
 pub fn run_setup<B: Backend>(
     terminal: &mut Terminal<B>,
     interfaces: Vec<WirelessInterface>,
-) -> Result<(String, String, Option<i32>)> {
+) -> Result<(String, String, Option<i32>)>
+where
+    B::Error: Send + Sync + 'static,
+{
     if interfaces.len() == 1 {
         return Ok((interfaces[0].name.clone(), interfaces[0].name.clone(), None));
     }
@@ -54,7 +57,10 @@ pub fn run_setup<B: Backend>(
 pub fn run_setup_overlay<B: Backend>(
     terminal: &mut Terminal<B>,
     interfaces: Vec<WirelessInterface>,
-) -> Result<Option<(String, String, Option<i32>)>> {
+) -> Result<Option<(String, String, Option<i32>)>>
+where
+    B::Error: Send + Sync + 'static,
+{
     if interfaces.is_empty() {
         return Ok(None);
     }

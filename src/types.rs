@@ -19,7 +19,7 @@ pub const CHANNELS_6GHZ: &[u8] = &[
     149, 153, 157, 161, 165, 169, 173, 177, 181, 185, 189, 193, 197, 201, 205, 209,
     213, 217, 221, 225, 229, 233,
 ];
-pub const CHANNEL_HOP_MS: u64 = 250;
+pub const CHANNEL_HOP_MS: u64 = 400;
 
 /// Wi-Fi band
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -55,6 +55,16 @@ pub fn freq_to_band(freq_mhz: u32) -> Band {
         5180..=5825 => Band::FiveGHz,
         5925..=7125 => Band::SixGHz,
         _ => Band::TwoGHz,
+    }
+}
+
+/// Convert radiotap frequency back to 802.11 channel number.
+pub fn freq_to_channel(freq_mhz: u32) -> u8 {
+    match freq_mhz {
+        2412..=2484 => ((freq_mhz - 2407) / 5) as u8,
+        5180..=5825 => ((freq_mhz - 5000) / 5) as u8,
+        5925..=7125 => ((freq_mhz - 5950) / 5) as u8,
+        _ => 0,
     }
 }
 
@@ -167,6 +177,7 @@ pub enum InputMode {
     Normal,
     SaveListName,
     ClientRename,
+    ApFilter,
 }
 
 /// Application UI state
@@ -291,6 +302,7 @@ pub struct App {
     pub cpu_usage: f32,
     pub sys: System,
     pub channel_focused: bool, // true while locked to an AP's channel for client discovery
+    pub ap_filter: String,     // live SSID/BSSID filter text; empty = show all
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -372,9 +384,26 @@ impl App {
             cpu_usage: 0.0,
             sys: System::new_all(),
             channel_focused: false,
+            ap_filter: String::new(),
         };
 
         (app, scanner_tx)
+    }
+
+    /// Returns indices of APs that match the current `ap_filter` (all if filter is empty).
+    pub fn visible_ap_indices(&self) -> Vec<usize> {
+        if self.ap_filter.is_empty() {
+            (0..self.ap_list.len()).collect()
+        } else {
+            let q = self.ap_filter.to_lowercase();
+            self.ap_list.iter().enumerate()
+                .filter(|(_, ap)| {
+                    ap.ssid.to_lowercase().contains(&q)
+                        || ap.bssid.to_lowercase().contains(&q)
+                })
+                .map(|(i, _)| i)
+                .collect()
+        }
     }
 
     pub fn add_log(&mut self, msg: String) {
