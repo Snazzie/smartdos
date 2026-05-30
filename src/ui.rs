@@ -1067,16 +1067,42 @@ fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
 }
 
 fn truncate_str(s: &str, max_len: usize) -> String {
-    if s.len() <= max_len {
+    if s.chars().count() <= max_len {
         s.to_string()
     } else {
-        format!("{}…", &s[..max_len.saturating_sub(1)])
+        let kept: String = s.chars().take(max_len.saturating_sub(1)).collect();
+        format!("{}…", kept)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::scroll_offset;
+    use super::truncate_str;
+
+    #[test]
+    fn truncate_str_short_string_unchanged() {
+        assert_eq!(truncate_str("CleanAP", 14), "CleanAP");
+        assert_eq!(truncate_str("", 14), "");
+    }
+
+    #[test]
+    fn truncate_str_truncates_by_char_count_with_ellipsis() {
+        assert_eq!(truncate_str("abcdef", 4), "abc…");
+        // exactly max_len chars → unchanged
+        assert_eq!(truncate_str("abcd", 4), "abcd");
+    }
+
+    #[test]
+    fn truncate_str_multibyte_does_not_panic() {
+        // Regression: the old byte-slice impl panicked here ("byte index N is
+        // not a char boundary"). Multibyte SSIDs must truncate by char, safely.
+        let s = "日本語ネットワーク"; // 8 chars, 24 bytes
+        let out = truncate_str(s, 4);
+        assert_eq!(out, "日本語…");
+        // emoji are multi-byte too
+        assert_eq!(truncate_str("📶📶📶📶📶", 3), "📶📶…");
+    }
 
     #[test]
     fn scroll_offset_no_scroll_when_selection_fits() {
