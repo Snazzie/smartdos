@@ -286,7 +286,7 @@ pub fn set_channel(mon_iface: &str, channel: u8, band: Band) -> Result<()> {
 /// Returns (supports_5ghz, supports_6ghz).
 #[cfg(target_os = "linux")]
 pub fn detect_band_capabilities(phy: &str) -> (bool, bool) {
-    let output = match Command::new("iw").args([phy, "channels"]).output() {
+    let output = match Command::new("iw").args(["phy", phy, "channels"]).output() {
         Ok(o) => o,
         Err(_) => return (false, false),
     };
