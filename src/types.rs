@@ -9,12 +9,9 @@ use sysinfo::System;
 
 /// Channel hopping config
 pub const CHANNELS_2GHZ: &[u8] = &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11];
-/// Full 5 GHz channel set including DFS (52-144)
-pub const CHANNELS_5GHZ: &[u8] = &[
-    36, 40, 44, 48, 52, 56, 60, 64,
-    100, 104, 108, 112, 116, 120, 124, 128, 132, 136, 140, 144,
-    149, 153, 157, 161, 165,
-];
+/// 5 GHz non-DFS channels only (UNII-1 + UNII-3).
+/// DFS channels 52-144 require radar detection (CAC) and block iw indefinitely.
+pub const CHANNELS_5GHZ: &[u8] = &[36, 40, 44, 48, 149, 153, 157, 161, 165];
 /// 6 GHz: every 4th channel (all 20 MHz primaries, 1–233)
 pub const CHANNELS_6GHZ: &[u8] = &[
     1, 5, 9, 13, 17, 21, 25, 29, 33, 37, 41, 45, 49, 53, 57, 61, 65, 69, 73, 77,

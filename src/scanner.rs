@@ -217,22 +217,19 @@ pub fn start_scanner(
     Ok(handle)
 }
 
-/// Set channel on a monitor interface via frequency.
+/// Set channel on a monitor interface via frequency (fire-and-forget).
+/// Uses spawn() instead of output() to avoid blocking the scanner thread —
+/// iw can block indefinitely on DFS/CAC channels or slow drivers.
 #[cfg(all(not(feature = "demo"), target_os = "linux"))]
 fn set_channel(iface: &str, channel: u8, band: Band) -> Result<()> {
     let freq = channel_to_freq_mhz(channel, band);
-    let out = std::process::Command::new("iw")
+    std::process::Command::new("iw")
         .args(["dev", iface, "set", "freq", &freq.to_string()])
-        .output()
-        .context(format!("Failed to set freq {} MHz on {}", freq, iface))?;
-    if !out.status.success() {
-        anyhow::bail!(
-            "iw set freq {} MHz on {} failed: {}",
-            freq,
-            iface,
-            String::from_utf8_lossy(&out.stderr).trim()
-        );
-    }
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .context(format!("Failed to spawn iw for freq {} MHz on {}", freq, iface))?;
     Ok(())
 }
 
@@ -283,6 +280,21 @@ fn open_handshake_writer() -> Result<(crate::handshake::PcapWriter, String)> {
     let writer = crate::handshake::PcapWriter::create(&path)
         .context("create handshake pcap")?;
     Ok((writer, path.display().to_string()))
+}
+
+/// Make a raw 802.11 SSID safe to render in the TUI.
+///
+/// SSIDs are arbitrary 0–32 byte blobs and routinely contain control
+/// characters (CR/LF/TAB/ESC/NUL, ANSI escapes). Written verbatim into a
+/// terminal cell those bytes move the cursor — CR jumps to column 0, LF
+/// drops a line, TAB hops a tab stop — which shatters the AP-list column
+/// layout and can make a row's name appear to vanish. Replace every control
+/// char with a visible '.' so the string occupies exactly the width it shows.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn sanitize_ssid(raw: &str) -> String {
+    raw.chars()
+        .map(|c| if c.is_control() { '.' } else { c })
+        .collect()
 }
 
 /// Parse a beacon or probe response frame → returns AP info
@@ -348,7 +360,7 @@ fn parse_beacon_frame_raw(data: &[u8]) -> Option<AccessPoint> {
         match tag_number {
             0 => {
                 if tag_length > 0 && tag_length <= 32 {
-                    ssid = String::from_utf8_lossy(tag_value).to_string();
+                    ssid = sanitize_ssid(&String::from_utf8_lossy(tag_value));
                 } else {
                     ssid = "<Hidden>".to_string();
                 }
@@ -827,6 +839,24 @@ mod tests {
             0x00, 0x0F, 0xAC, 0x01, 0x00, 0x00,
         ];
         assert_eq!(parse_rsn_ie(&ie), "W2-Ent");
+    }
+
+    #[test]
+    fn sanitize_ssid_replaces_control_chars() {
+        // CR/LF/TAB/ESC/NUL would move the terminal cursor and break columns.
+        assert_eq!(sanitize_ssid("Home\rXX"), "Home.XX");
+        assert_eq!(sanitize_ssid("a\tb"), "a.b");
+        assert_eq!(sanitize_ssid("Line\nBreak"), "Line.Break");
+        assert_eq!(sanitize_ssid("\x1b[31mred\x1b[0m"), ".[31mred.[0m");
+        assert_eq!(sanitize_ssid("nul\0byte"), "nul.byte");
+    }
+
+    #[test]
+    fn sanitize_ssid_preserves_printable_unicode() {
+        // Wide/multibyte glyphs are not control chars — ratatui clips them to
+        // the cell, so leave them intact.
+        assert_eq!(sanitize_ssid("café-日本語"), "café-日本語");
+        assert_eq!(sanitize_ssid("CleanAP"), "CleanAP");
     }
 
     #[test]
