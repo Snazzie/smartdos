@@ -639,44 +639,60 @@ fn parse_client_frame_raw(data: &[u8]) -> Option<(String, Client)> {
             }
         }
         // Data frames — track data going to/from APs to find clients
-        // We only do this if we can match to an AP we know
-        // (handled by checking the BSSID field)
+        // Address layout in 802.11 infrastructure data frames depends on To-DS/From-DS bits:
+        //   To-DS=1, From-DS=0: Addr1=BSSID, Addr2=SA(client), Addr3=DA
+        //   To-DS=0, From-DS=1: Addr1=DA(client), Addr2=BSSID, Addr3=SA
         (2, _) => {
-            // Data frame: DA could be AP, SA could be AP
-            // BSSID field is the BSSID for data frames
-            if bssid != "ff:ff:ff:ff:ff:ff" && !bssid.starts_with("00:00:00") {
-                // Determine which address is the client (the one that's NOT the BSSID)
-                if sa == bssid {
-                    // AP sending to client — client is DA
-                    Some((
-                        bssid,
-                        Client {
-                            mac: da,
-                            signal_dbm,
-                            packets: 1,
-                            last_seen: Instant::now(),
-                            associated: true,
-                            friendly_name: None,
-                        },
-                    ))
-                } else if da == bssid {
-                    // Client sending to AP — client is SA
-                    Some((
-                        bssid,
-                        Client {
-                            mac: sa,
-                            signal_dbm,
-                            packets: 1,
-                            last_seen: Instant::now(),
-                            associated: true,
-                            friendly_name: None,
-                        },
-                    ))
-                } else {
-                    None // BSSID doesn't match either address
+            let to_ds = (frame_control >> 8) & 1;
+            let from_ds = (frame_control >> 9) & 1;
+            match (to_ds, from_ds) {
+                (1, 0) => {
+                    // Client → AP: Addr1=BSSID(da var), Addr2=client(sa var)
+                    let actual_bssid = da;
+                    let client_mac = sa;
+                    if actual_bssid != "ff:ff:ff:ff:ff:ff"
+                        && !actual_bssid.starts_with("00:00:00")
+                        && client_mac != "ff:ff:ff:ff:ff:ff"
+                    {
+                        Some((
+                            actual_bssid,
+                            Client {
+                                mac: client_mac,
+                                signal_dbm,
+                                packets: 1,
+                                last_seen: Instant::now(),
+                                associated: true,
+                                friendly_name: None,
+                            },
+                        ))
+                    } else {
+                        None
+                    }
                 }
-            } else {
-                None
+                (0, 1) => {
+                    // AP → Client: Addr1=client(da var), Addr2=BSSID(sa var)
+                    let actual_bssid = sa;
+                    let client_mac = da;
+                    if actual_bssid != "ff:ff:ff:ff:ff:ff"
+                        && !actual_bssid.starts_with("00:00:00")
+                        && client_mac != "ff:ff:ff:ff:ff:ff"
+                    {
+                        Some((
+                            actual_bssid,
+                            Client {
+                                mac: client_mac,
+                                signal_dbm,
+                                packets: 1,
+                                last_seen: Instant::now(),
+                                associated: true,
+                                friendly_name: None,
+                            },
+                        ))
+                    } else {
+                        None
+                    }
+                }
+                _ => None, // IBSS or WDS — skip
             }
         }
         _ => None,

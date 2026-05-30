@@ -296,8 +296,8 @@ pub fn detect_band_capabilities(phy: &str) -> (bool, bool) {
     for line in stdout.lines() {
         if let Some(freq_str) = line.trim().split_whitespace().next() {
             if let Ok(mhz) = freq_str.parse::<u32>() {
-                if mhz == 5180 { has_5 = true; }
-                if mhz == 5955 { has_6 = true; }
+                if (5180..=5825).contains(&mhz) { has_5 = true; }
+                if (5925..=7125).contains(&mhz) { has_6 = true; }
             }
         }
     }
