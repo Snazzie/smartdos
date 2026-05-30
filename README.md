@@ -1,5 +1,7 @@
 # smartdos v0.1
 
+> **🚧 Work in Progress** — This project is under active development and has not been rigorously tested. Expect bugs, incomplete features, and breaking changes. Use at your own risk.
+
 **Wireless AP scanner + deauth attack orchestrator with terminal UI**
 
 `smartdos` is an interactive TUI tool for ethical wireless penetration testing. It discovers nearby access points via beacon frame capture, lets you select targets, and orchestrates deauthentication attacks in round-robin or parallel mode — all from a keyboard-driven terminal interface.
