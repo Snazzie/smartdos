@@ -24,18 +24,67 @@
 
 ## Features
 
-| Feature                  | Description                                                          |
-| ------------------------ | -------------------------------------------------------------------- |
-| **AP Scanning**          | Live 802.11 beacon/probe-response capture via pcap                   |
-| **Signal Display**       | dBm + percentage for each AP, color-coded (green/yellow/red)         |
-| **Channel Detection**    | Automatically reads channel from DS Parameter Set tag                |
-| **Encryption Detection** | Identifies OPEN / WPA / WPA2                                         |
-| **Target Management**    | Add/remove targets from AP list, enable/disable individual targets   |
-| **Attack Modes**         | Round-Robin (cycle targets) or Parallel (all targets simultaneously) |
-| **Deauth Injection**     | Raw 802.11 deauth frames with radiotap header                        |
-| **Monitor Mode**         | Auto-enables via `airmon-ng` or `iw`                                 |
-| **Live Counters**        | Real-time deauth frame counters per target                           |
-| **Event Log**            | Scrollable log panel showing actions and errors                      |
+### Scanning & Discovery
+
+| Feature                  | Description                                                                          |
+| ------------------------ | ------------------------------------------------------------------------------------ |
+| **AP Scanning**          | Live 802.11 beacon/probe-response capture via pcap on 2.4 GHz and 5 GHz channels    |
+| **Client Discovery**     | Detects associated clients per AP from data/management frames                        |
+| **Signal Display**       | dBm + percentage for each AP, color-coded (green/yellow/red)                         |
+| **Channel Detection**    | Reads channel from DS Parameter Set IE tag                                           |
+| **Encryption Detection** | Identifies OPEN / WPA / WPA2                                                         |
+| **Vendor Lookup**        | OUI-based NIC vendor identification for APs and clients                              |
+| **Channel Hopping**      | Scanner hops across 2.4 GHz and 5 GHz channels every 250 ms                         |
+
+### Attack Capabilities
+
+| Feature                  | Description                                                                          |
+| ------------------------ | ------------------------------------------------------------------------------------ |
+| **Deauth Injection**     | Raw 802.11 deauth frames (FC `0xC0`) with radiotap header via pcap `sendpacket()`   |
+| **AuthDos**              | 802.11 authentication DoS — floods AP with spoofed auth requests                    |
+| **BeaconFlood**          | Beacon flood — injects fake SSIDs to saturate client scan tables                    |
+| **Broadcast Deauth**     | Deauthenticates all clients from a target AP (broadcast DA)                          |
+| **Client Deauth**        | Targeted deauth of a specific client MAC (bidirectional: AP→client and client→AP)   |
+| **Round-Robin Mode**     | Cycles through targets one at a time with configurable inter-burst delay             |
+| **Parallel Mode**        | Attacks all targets simultaneously                                                   |
+| **Configurable Burst**   | Adjustable burst size and send interval via in-app settings overlay (`G`)            |
+
+### Client Tracking & Pursuit
+
+| Feature                  | Description                                                                          |
+| ------------------------ | ------------------------------------------------------------------------------------ |
+| **Client Follow**        | Follow a specific client MAC — auto-updates target AP when client roams              |
+| **Pursuit Mode**         | Single-adapter pursuit: triggers channel sweep when followed client goes silent      |
+| **Client Naming**        | Assign friendly names to client MACs; persisted across sessions                     |
+
+### Handshake Capture
+
+| Feature                  | Description                                                                          |
+| ------------------------ | ------------------------------------------------------------------------------------ |
+| **WPA Handshake Capture**| Detects EAPOL frames from data captures; writes pcap files to `~/.smartdos/handshakes/` |
+| **PMKID Capture**        | Captures PMKID from EAPOL frame 1; compatible with aircrack-ng / hashcat            |
+| **Libpcap Format Output**| Radiotap (linktype 127) pcap files — crackable with `aircrack-ng -w` or `hashcat`   |
+
+### Persistence & Session Management
+
+| Feature                  | Description                                                                          |
+| ------------------------ | ------------------------------------------------------------------------------------ |
+| **Session Logging**      | All events written to `~/.smartdos/session.log` with auto-rotation at size limit    |
+| **Saved-List Restore**   | On launch, optionally restore a previously saved target/client list from `~/.smartdos/lists/` |
+| **AP List Persistence**  | Discovered APs saved to `~/.smartdos/aps.json`                                      |
+| **Attack Settings**      | Burst size, interval, attack type, pursuit mode persisted across sessions            |
+| **Named Lists**          | Save/load named target or client lists via `~/.smartdos/lists/`                     |
+
+### Interface & UI
+
+| Feature                  | Description                                                                          |
+| ------------------------ | ------------------------------------------------------------------------------------ |
+| **Monitor Mode**         | Auto-enables via `airmon-ng` or falls back to `iw`                                  |
+| **Live Counters**        | Real-time deauth frame counters per target                                           |
+| **Event Log**            | Scrollable log panel showing actions and errors                                      |
+| **3-Tab Navigation**     | AP list / Target list / Client list panels                                           |
+| **Settings Overlay**     | In-app overlay to tune burst size and send interval without restarting               |
+| **Clear Scan Results**   | `R` clears AP list and resets discovery state mid-session                            |
 
 ---
 
@@ -87,20 +136,33 @@ sudo ./target/release/smartdos wlan0
 
 # If you already have a monitor interface:
 sudo ./target/release/smartdos wlan0mon
+
+# Demo mode (no hardware required — uses stub interface for UI development/testing):
+./target/release/smartdos --demo
 ```
 
 ### Controls
 
-| Key         | Action                                      |
-| ----------- | ------------------------------------------- |
-| `↑` / `↓`   | Navigate list                               |
-| `Tab`       | Switch between AP list / Target list        |
-| `t`         | Toggle target (add/remove selected AP)      |
-| `d`         | Remove selected target                      |
-| `Space`     | Enable/disable selected target              |
-| `M`         | Toggle attack mode (Round-Robin ↔ Parallel) |
-| `S`         | Start / Stop deauth attack                  |
-| `Q` / `Esc` | Quit                                        |
+| Key             | Action                                                       |
+| --------------- | ------------------------------------------------------------ |
+| `↑` / `↓`       | Navigate list                                                |
+| `←` / `→`       | Switch panels                                                |
+| `Tab`           | Cycle through AP / Target / Client panels                    |
+| `t`             | Toggle target — add/remove selected AP, or target selected client (in client view) |
+| `d`             | Remove selected target                                       |
+| `Space`         | Enable/disable selected target                               |
+| `c`             | View clients of selected AP                                  |
+| `n`             | Name selected client                                         |
+| `A`             | Cycle attack type (Deauth → AuthDos → BeaconFlood)           |
+| `M`             | Toggle attack mode (Round-Robin ↔ Parallel)                  |
+| `P`             | Toggle pursuit mode                                          |
+| `G`             | Open settings overlay (burst size / send interval)           |
+| `S`             | Start / Stop attack                                          |
+| `W`             | Save current target/client list with a name                  |
+| `L`             | Load a saved target/client list                              |
+| `R`             | Clear scan results                                           |
+| `I`             | Open interface setup                                         |
+| `Q` / `Esc`     | Quit                                                         |
 
 ### Layout
 

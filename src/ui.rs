@@ -1,13 +1,16 @@
 use ratatui::{
-    layout::{Alignment, Constraint, Direction, Layout, Rect},
+    layout::{Alignment, Constraint, Direction, Layout, Margin, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span, Text},
-    widgets::{Block, BorderType, Borders, Cell, Clear, Paragraph, Row, Table},
+    widgets::{
+        Block, BorderType, Borders, Cell, Clear, Paragraph, Row, Scrollbar,
+        ScrollbarOrientation, ScrollbarState, Table,
+    },
     Frame,
 };
 
 use crate::oui;
-use crate::types::{App, AttackMode, AttackType, Band, DeauthScope, InputMode, TabSelection};
+use crate::types::{App, AttackMode, AttackType, Band, DeauthScope, InputMode, TabSelection, TargetSubSection};
 
 pub fn render(frame: &mut Frame, app: &mut App) {
     let area = frame.area();
@@ -45,7 +48,11 @@ fn render_top_bar(frame: &mut Frame, app: &App, area: Rect) {
         (Some(mon), _) | (_, Some(mon)) => format!(" [{}", mon),
         _ => " [no iface".to_string(),
     };
-    let ch_info = format!(" ch:{}/{}] ", app.current_channel, app.current_band.label());
+    let tx_str = match app.txpower_dbm {
+        Some(dbm) => format!(" TX:{}dBm", dbm),
+        None => " TX:auto".to_string(),
+    };
+    let ch_info = format!(" ch:{}/{}{tx_str}] ", app.current_channel, app.current_band.label());
 
     let mode_str = match app.state {
         crate::types::AppState::Scanning => " SCAN ",
@@ -259,22 +266,27 @@ fn render_ap_list(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(block, area);
 }
 
-/// Target list panel (right, shown in TargetList tab)
+/// Target list panel (right, shown in TargetList tab) — split: clients top, APs bottom
 fn render_targets_panel(frame: &mut Frame, app: &App, area: Rect) {
     let is_active = app.tab_selection == TabSelection::TargetList;
-    let style = if is_active {
+    let border_style = if is_active {
         Style::default().fg(Color::Yellow)
     } else {
         Style::default().fg(Color::DarkGray)
     };
 
-    let block = Block::default()
+    let client_targets: Vec<_> = app.targets.iter().enumerate()
+        .filter(|(_, t)| !t.client_filter.is_empty())
+        .collect();
+    let ap_targets: Vec<_> = app.targets.iter().enumerate().collect();
+
+    let outer_block = Block::default()
         .title(format!(" Targets ({}) ", app.targets.len()))
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .border_style(style);
+        .border_style(border_style);
 
-    let inner = block.inner(area);
+    let outer_inner = outer_block.inner(area);
 
     if app.targets.is_empty() {
         let empty_text = Paragraph::new(Text::from(vec![
@@ -282,36 +294,58 @@ fn render_targets_panel(frame: &mut Frame, app: &App, area: Rect) {
             Line::from("  No targets added."),
             Line::from("  't' to add selected AP"),
             Line::from("  'c' to view AP clients"),
-            Line::from("  'f' to follow a client"),
+            Line::from("  'c' → clients → 't' to target"),
         ]))
         .style(Style::default().fg(Color::DarkGray));
-        frame.render_widget(empty_text, inner);
-        frame.render_widget(block, area);
+        frame.render_widget(empty_text, outer_inner);
+        frame.render_widget(outer_block, area);
         return;
     }
 
-    let visible_height = (inner.height as usize).saturating_sub(2);
-    let scroll_offset = app.target_scroll_offset;
+    frame.render_widget(outer_block, area);
 
-    let rows: Vec<Row> = app
-        .targets
-        .iter()
-        .skip(scroll_offset)
-        .take(visible_height)
-        .enumerate()
-        .map(|(display_idx, target)| {
-            let global_idx = scroll_offset + display_idx;
-            let is_selected = is_active && app.selected_target_idx == Some(global_idx);
+    let client_rows_needed = (client_targets.len() + 2).max(3) as u16; // header + rows + min
+    let ap_rows_needed = (ap_targets.len() + 2).max(3) as u16;
+    let split = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Min(client_rows_needed.min(outer_inner.height / 2)),
+            Constraint::Min(ap_rows_needed.min(outer_inner.height / 2)),
+        ])
+        .split(outer_inner);
 
-            let status = if target.active { " ACTIVE " } else { "OFF" };
+    // ── Client targets (top) ──────────────────────────────────────────────
+    let client_focused = is_active && app.target_sub_section == TargetSubSection::Clients;
+    let client_block = Block::default()
+        .title(format!(" Clients ({}) ", client_targets.len()))
+        .borders(Borders::ALL)
+        .border_type(BorderType::Plain)
+        .border_style(Style::default().fg(if client_focused { Color::Yellow } else { Color::Cyan }));
+    let client_inner = client_block.inner(split[0]);
+    frame.render_widget(client_block, split[0]);
+
+    let client_col_widths = [
+        Constraint::Percentage(28),
+        Constraint::Percentage(20),
+        Constraint::Percentage(12),
+        Constraint::Percentage(20),
+        Constraint::Percentage(20),
+    ];
+    let client_header = Row::new(["Client MAC", "AP BSSID", "Status", "Sent", "Disc"].iter().map(|h| {
+        Cell::from(*h).style(Style::default().fg(Color::White).add_modifier(Modifier::BOLD))
+    }))
+    .height(1)
+    .style(Style::default().bg(Color::Rgb(0, 60, 80)));
+
+    let client_rows: Vec<Row> = client_targets.iter()
+        .map(|(global_idx, target)| {
+            let is_selected = is_active && app.selected_target_idx == Some(*global_idx);
+            let status = if target.active { "ACTIVE" } else { "OFF" };
             let row_style = if is_selected {
-                Style::default()
-                    .bg(Color::Rgb(50, 30, 30))
-                    .add_modifier(Modifier::BOLD)
+                Style::default().bg(Color::Rgb(30, 50, 70)).add_modifier(Modifier::BOLD)
             } else {
                 Style::default()
             };
-
             let disc_cell = if target.disconnect_count > 0 {
                 Cell::from(Span::styled(
                     format!("{:>5}", target.disconnect_count),
@@ -320,20 +354,19 @@ fn render_targets_panel(frame: &mut Frame, app: &App, area: Rect) {
             } else {
                 Cell::from(Span::styled("    -", Style::default().fg(Color::DarkGray)))
             };
-
+            let client_label = if target.client_filter.len() == 1 {
+                truncate_str(&target.client_filter[0], 17)
+            } else {
+                format!("{} macs", target.client_filter.len())
+            };
             Row::new(vec![
-                Cell::from(truncate_str(&target.ssid, 14)),
+                Cell::from(Span::styled(client_label, Style::default().fg(Color::Cyan))),
                 Cell::from(truncate_str(&target.bssid, 17)),
-                Cell::from(format!("{:>3}", target.channel)),
                 Cell::from(Span::styled(
                     status,
-                    Style::default().fg(if target.active {
-                        Color::Red
-                    } else {
-                        Color::DarkGray
-                    }),
+                    Style::default().fg(if target.active { Color::Red } else { Color::DarkGray }),
                 )),
-                Cell::from(format!("{:>6}", target.deauth_count)),
+                Cell::from(format!("{:>5}", target.deauth_count)),
                 disc_cell,
             ])
             .style(row_style)
@@ -341,31 +374,135 @@ fn render_targets_panel(frame: &mut Frame, app: &App, area: Rect) {
         })
         .collect();
 
-    let header = Row::new(["SSID", "BSSID", "CH", "Status", "Sent", "Disc"].iter().map(|h| {
-        Cell::from(*h).style(
-            Style::default()
-                .fg(Color::White)
-                .add_modifier(Modifier::BOLD),
-        )
+    if client_rows.is_empty() {
+        let hint = Paragraph::new("  No client targets  ('c' → clients → 't')")
+            .style(Style::default().fg(Color::DarkGray));
+        frame.render_widget(hint, client_inner);
+    } else {
+        let sel_pos = app.selected_target_idx
+            .and_then(|g| client_targets.iter().position(|(gi, _)| *gi == g));
+        render_scrollable_table(
+            frame, split[0], client_inner, client_header, &client_col_widths, client_rows, sel_pos,
+        );
+    }
+
+    // ── AP targets (bottom) ───────────────────────────────────────────────
+    let ap_focused = is_active && app.target_sub_section == TargetSubSection::Aps;
+    let ap_block = Block::default()
+        .title(format!(" APs ({}) ", ap_targets.len()))
+        .borders(Borders::ALL)
+        .border_type(BorderType::Plain)
+        .border_style(Style::default().fg(if ap_focused { Color::Yellow } else { Color::Red }));
+    let ap_inner = ap_block.inner(split[1]);
+    frame.render_widget(ap_block, split[1]);
+
+    let ap_col_widths = [
+        Constraint::Percentage(18),
+        Constraint::Percentage(22),
+        Constraint::Percentage(5),
+        Constraint::Percentage(12),
+        Constraint::Percentage(13),
+        Constraint::Percentage(13),
+        Constraint::Percentage(17),
+    ];
+    let ap_header = Row::new(["SSID", "BSSID", "CH", "Status", "Sent", "Disc", "Via"].iter().map(|h| {
+        Cell::from(*h).style(Style::default().fg(Color::White).add_modifier(Modifier::BOLD))
     }))
     .height(1)
-    .style(Style::default().bg(Color::Rgb(100, 0, 0)));
+    .style(Style::default().bg(Color::Rgb(80, 0, 0)));
 
-    let table_widths = [
-        Constraint::Percentage(22),
-        Constraint::Percentage(26),
-        Constraint::Percentage(7),
-        Constraint::Percentage(14),
-        Constraint::Percentage(18),
-        Constraint::Percentage(13),
-    ];
+    let ap_rows: Vec<Row> = ap_targets.iter()
+        .map(|(global_idx, target)| {
+            let is_selected = is_active && app.selected_target_idx == Some(*global_idx);
+            let status = if target.active { " ACTIVE " } else { "OFF" };
+            let row_style = if is_selected {
+                Style::default().bg(Color::Rgb(50, 30, 30)).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default()
+            };
+            let disc_cell = if target.disconnect_count > 0 {
+                Cell::from(Span::styled(
+                    format!("{:>5}", target.disconnect_count),
+                    Style::default().fg(Color::Green).add_modifier(Modifier::BOLD),
+                ))
+            } else {
+                Cell::from(Span::styled("    -", Style::default().fg(Color::DarkGray)))
+            };
+            let via_cell = if target.client_filter.is_empty() {
+                Cell::from(Span::styled("DIRECT", Style::default().fg(Color::Red)))
+            } else {
+                Cell::from(Span::styled("CLIENT", Style::default().fg(Color::Cyan)))
+            };
+            Row::new(vec![
+                Cell::from(truncate_str(&target.ssid, 12)),
+                Cell::from(truncate_str(&target.bssid, 17)),
+                Cell::from(format!("{:>2}", target.channel)),
+                Cell::from(Span::styled(
+                    status,
+                    Style::default().fg(if target.active { Color::Red } else { Color::DarkGray }),
+                )),
+                Cell::from(format!("{:>5}", target.deauth_count)),
+                disc_cell,
+                via_cell,
+            ])
+            .style(row_style)
+            .height(1)
+        })
+        .collect();
 
-    let table = Table::new(rows, table_widths)
+    if ap_rows.is_empty() {
+        let hint = Paragraph::new("  No AP targets  ('t' to add)")
+            .style(Style::default().fg(Color::DarkGray));
+        frame.render_widget(hint, ap_inner);
+    } else {
+        let sel_pos = app.selected_target_idx
+            .and_then(|g| ap_targets.iter().position(|(gi, _)| *gi == g));
+        render_scrollable_table(
+            frame, split[1], ap_inner, ap_header, &ap_col_widths, ap_rows, sel_pos,
+        );
+    }
+}
+
+/// First row to display so that `selected_pos` stays within a `viewport`-row
+/// window. Returns 0 when nothing is selected or the selection already fits.
+fn scroll_offset(selected_pos: Option<usize>, viewport: usize) -> usize {
+    match selected_pos {
+        Some(p) if viewport > 0 && p >= viewport => p + 1 - viewport,
+        _ => 0,
+    }
+}
+
+/// Render a table that scrolls to keep the selected row visible, drawing a
+/// vertical scrollbar on the block's right border when the content overflows.
+/// `outer` is the bordered block area; `inner` is its content area.
+fn render_scrollable_table<'a>(
+    frame: &mut Frame,
+    outer: Rect,
+    inner: Rect,
+    header: Row<'a>,
+    widths: &[Constraint],
+    rows: Vec<Row<'a>>,
+    selected_pos: Option<usize>,
+) {
+    let total = rows.len();
+    let viewport = (inner.height as usize).saturating_sub(1); // header consumes one row
+    let offset = scroll_offset(selected_pos, viewport);
+    let visible: Vec<Row> = rows.into_iter().skip(offset).take(viewport.max(1)).collect();
+    let table = Table::new(visible, widths.to_vec())
         .header(header)
         .column_spacing(1);
-
     frame.render_widget(table, inner);
-    frame.render_widget(block, area);
+
+    if total > viewport && viewport > 0 {
+        let mut state = ScrollbarState::new(total).position(offset);
+        let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
+            .begin_symbol(None)
+            .end_symbol(None)
+            .track_symbol(Some("│"))
+            .thumb_symbol("█");
+        let sb_area = outer.inner(Margin { vertical: 1, horizontal: 0 });
+        frame.render_stateful_widget(scrollbar, sb_area, &mut state);
+    }
 }
 
 /// Client list panel (right, shown in ClientList tab) — MAC / Vendor / dBm / Status / Pkts
@@ -413,7 +550,7 @@ fn render_clients_panel(frame: &mut Frame, app: &App, area: Rect) {
             Line::from("  probe, associate, or send"),
             Line::from("  data frames."),
             Line::from(""),
-            Line::from("  'f' follow  Tab back"),
+            Line::from("  't' target  Tab back"),
         ]))
         .style(Style::default().fg(Color::DarkGray));
         frame.render_widget(empty_text, inner);
@@ -538,8 +675,8 @@ fn render_clients_panel(frame: &mut Frame, app: &App, area: Rect) {
 
     if is_active {
         let hint = Paragraph::new(Line::from(vec![
-            Span::styled(" f ", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
-            Span::raw("follow  "),
+            Span::styled(" t ", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+            Span::raw("target  "),
             Span::styled(" n ", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
             Span::raw("rename  "),
             Span::styled(" Tab ", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
@@ -719,17 +856,17 @@ fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
             add(&mut spans, "↑↓", "nav");
             add(&mut spans, "t", "target");
             add(&mut spans, "c", "clients");
-            add(&mut spans, "f", "follow");
             add(&mut spans, "r", "clear scan");
         }
         TabSelection::TargetList => {
             add(&mut spans, "↑↓", "nav");
+            add(&mut spans, "←→", "switch section");
             add(&mut spans, "Space", "toggle");
             add(&mut spans, "d", "remove");
         }
         TabSelection::ClientList => {
             add(&mut spans, "↑↓", "select");
-            add(&mut spans, "f", "follow");
+            add(&mut spans, "t", "target");
             add(&mut spans, "n", "rename");
             add(&mut spans, "c/Esc", "back");
         }
@@ -765,7 +902,7 @@ fn render_list_picker(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(Clear, popup);
 
     let block = Block::default()
-        .title(" Load Saved List ")
+        .title(" Load Saved List — Esc to start fresh ")
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(Color::Cyan));
@@ -841,5 +978,28 @@ fn truncate_str(s: &str, max_len: usize) -> String {
         s.to_string()
     } else {
         format!("{}…", &s[..max_len.saturating_sub(1)])
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::scroll_offset;
+
+    #[test]
+    fn scroll_offset_no_scroll_when_selection_fits() {
+        assert_eq!(scroll_offset(Some(0), 4), 0);
+        assert_eq!(scroll_offset(Some(3), 4), 0); // last row still in window
+        assert_eq!(scroll_offset(None, 4), 0); // nothing selected → top
+    }
+
+    #[test]
+    fn scroll_offset_pins_selection_to_bottom_row() {
+        assert_eq!(scroll_offset(Some(4), 4), 1); // first row that overflows
+        assert_eq!(scroll_offset(Some(9), 4), 6); // skip 6 → window 6..10 shows 9
+    }
+
+    #[test]
+    fn scroll_offset_zero_viewport_never_underflows() {
+        assert_eq!(scroll_offset(Some(5), 0), 0);
     }
 }

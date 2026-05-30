@@ -25,25 +25,37 @@ use std::io::{self};
 
 use std::sync::{atomic::Ordering, Arc};
 use std::sync::atomic::AtomicBool;
-use types::{App, InputMode, TabSelection, WirelessInterface};
+use signal_hook::{consts::{SIGINT, SIGTERM}, iterator::Signals};
+use types::{App, InputMode, TabSelection, TargetSubSection, WirelessInterface};
+
+/// Global indices of targets belonging to the active sub-section
+fn target_sub_indices(app: &App) -> Vec<usize> {
+    app.targets.iter().enumerate()
+        .filter(|(_, t)| match app.target_sub_section {
+            TargetSubSection::Clients => !t.client_filter.is_empty(),
+            TargetSubSection::Aps => t.client_filter.is_empty(),
+        })
+        .map(|(i, _)| i)
+        .collect()
+}
 
 fn main() -> Result<()> {
-    if !interface::check_root() {
+    let args: Vec<String> = std::env::args().collect();
+    let demo = args.iter().any(|a| a == "--demo");
+
+    // Demo mode uses a stub interface and never touches hardware, so it does
+    // not need root. Live mode requires root for monitor mode + injection.
+    if !demo && !interface::check_root() {
         eprintln!("⚠  smartdos requires root privileges for monitor mode and packet injection.");
         eprintln!("   Run with: sudo smartdos\n");
         std::process::exit(1);
     }
 
-    // Authorization gate — this tool injects frames and captures traffic.
-    let args: Vec<String> = std::env::args().collect();
-    let consent_bypassed = args.iter().any(|a| a == "-y" || a == "--yes")
-        || std::env::var("SMARTDOS_AUTHORIZED").is_ok();
-    if !consent_bypassed && !confirm_authorization() {
-        eprintln!("Authorization not confirmed. Exiting.");
-        std::process::exit(1);
-    }
-
-    let ifaces = interface::discover_interfaces()?;
+    let ifaces = if demo {
+        interface::discover_interfaces_demo()?
+    } else {
+        interface::discover_interfaces()?
+    };
     if ifaces.is_empty() {
         eprintln!("No wireless interfaces found.");
         std::process::exit(1);
@@ -56,7 +68,7 @@ fn main() -> Result<()> {
     let mut terminal = Terminal::new(backend)?;
     terminal.clear()?;
 
-    let (listen_name, attack_name) = setup::run_setup(&mut terminal, ifaces.clone())?;
+    let (listen_name, attack_name, txpower) = setup::run_setup(&mut terminal, ifaces.clone())?;
 
     let listen_phy = ifaces.iter()
         .find(|i| i.name == listen_name)
@@ -86,6 +98,15 @@ fn main() -> Result<()> {
         app.attack_physical = Some(attack_name.clone());
     }
 
+    if let Some(dbm) = txpower {
+        match interface::set_txpower(&attack_mon, Some(dbm)) {
+            Ok(()) => app.txpower_dbm = Some(dbm),
+            Err(e) => eprintln!("TX power error: {}", e),
+        }
+    } else {
+        app.txpower_dbm = interface::get_txpower(&attack_mon);
+    }
+
     let client_names = saved_lists::load_client_names();
     if !client_names.is_empty() {
         let count = client_names.len();
@@ -100,13 +121,6 @@ fn main() -> Result<()> {
         app.send_interval_ms = s.send_interval_ms;
         app.pursuit_mode = s.pursuit_mode;
         app.deauth_scope = s.deauth_scope;
-    }
-
-    let loaded = persist::load_targets();
-    if !loaded.is_empty() {
-        let count = loaded.len();
-        app.targets = loaded;
-        app.add_log(format!("Loaded {} persisted targets", count));
     }
 
     let loaded_aps = persist::load_ap_list();
@@ -145,32 +159,26 @@ fn main() -> Result<()> {
         _             => "2.4 GHz only",
     };
     app.add_log(format!("Band support: {}", band_str));
-    app.add_log("↑↓ nav | t target | c clients | f follow | r clear scan | I ifaces | Tab switch | M mode | S start/stop | Q quit".to_string());
+    app.add_log("↑↓ nav | t target/client | c clients | r clear scan | I ifaces | Tab/←→ switch | M mode | S start/stop | Q quit".to_string());
+
+    // Offer saved list at startup; user picks one or presses Esc to start fresh
+    app::open_list_picker(&mut app);
+
+    {
+        let running = Arc::clone(&app.running);
+        let mut signals = Signals::new([SIGINT, SIGTERM]).expect("failed to register signal handler");
+        std::thread::spawn(move || {
+            for _ in signals.forever() {
+                running.store(false, Ordering::Relaxed);
+            }
+        });
+    }
 
     let res = run_tui(&mut terminal, &mut app);
     shutdown(&mut terminal, &app);
     res
 }
 
-/// Require explicit operator authorization before doing anything active.
-/// Bypass with `-y`/`--yes` or `SMARTDOS_AUTHORIZED=1` for automated runs.
-fn confirm_authorization() -> bool {
-    use std::io::Write;
-    println!();
-    println!("┌─ smartdos — AUTHORIZATION REQUIRED ──────────────────────────────┐");
-    println!("│ This tool injects 802.11 deauth/auth/beacon frames and captures  │");
-    println!("│ wireless traffic (incl. WPA handshakes). Use ONLY on networks    │");
-    println!("│ you own or are explicitly authorized to test. Unauthorized use   │");
-    println!("│ is illegal in most jurisdictions.                                │");
-    println!("└──────────────────────────────────────────────────────────────────┘");
-    print!("Type 'yes' to confirm you are authorized: ");
-    let _ = io::stdout().flush();
-    let mut line = String::new();
-    if io::stdin().read_line(&mut line).is_err() {
-        return false;
-    }
-    line.trim().eq_ignore_ascii_case("yes")
-}
 
 fn activate_monitor(iface: &str) -> String {
     if iface.ends_with("mon") {
@@ -210,8 +218,8 @@ fn run_tui<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> Result<()> 
                 app::stop_attack(app);
             }
             let ifaces = interface::discover_interfaces().unwrap_or_default();
-            if let Ok(Some((listen, attack))) = setup::run_setup_overlay(terminal, ifaces) {
-                reconfigure_adapters(app, listen, attack);
+            if let Ok(Some((listen, attack, txpower))) = setup::run_setup_overlay(terminal, ifaces) {
+                reconfigure_adapters(app, listen, attack, txpower);
             }
         }
 
@@ -248,7 +256,7 @@ fn run_tui<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> Result<()> 
     Ok(())
 }
 
-fn reconfigure_adapters(app: &mut App, listen: String, attack: String) {
+fn reconfigure_adapters(app: &mut App, listen: String, attack: String, txpower: Option<i32>) {
     let listen_changed = app.listen_interface.as_deref() != Some(&listen);
 
     // Disable old attack adapter if distinct from listen
@@ -284,6 +292,15 @@ fn reconfigure_adapters(app: &mut App, listen: String, attack: String) {
     app.listen_interface = Some(listen_mon.clone());
     app.attack_interface = Some(attack_mon.clone());
     app.attack_physical = if attack != listen { Some(attack.clone()) } else { None };
+
+    if let Some(dbm) = txpower {
+        match interface::set_txpower(&attack_mon, Some(dbm)) {
+            Ok(()) => app.txpower_dbm = Some(dbm),
+            Err(e) => app.add_log(format!("TX power error: {}", e)),
+        }
+    } else {
+        app.txpower_dbm = interface::get_txpower(&attack_mon);
+    }
 
     if listen_changed {
         // Kill old scanner, start fresh one
@@ -391,10 +408,13 @@ fn handle_key_event(app: &mut App, key: KeyEvent) {
                 }
             }
             TabSelection::TargetList => {
-                if !app.targets.is_empty() {
-                    let idx = app.selected_target_idx.unwrap_or(0);
-                    if idx > 0 {
-                        app.selected_target_idx = Some(idx - 1);
+                let sub_indices = target_sub_indices(&app);
+                if !sub_indices.is_empty() {
+                    let cur = app.selected_target_idx
+                        .and_then(|i| sub_indices.iter().position(|&x| x == i))
+                        .unwrap_or(0);
+                    if cur > 0 {
+                        app.selected_target_idx = Some(sub_indices[cur - 1]);
                     }
                 }
             }
@@ -419,14 +439,13 @@ fn handle_key_event(app: &mut App, key: KeyEvent) {
                 }
             }
             TabSelection::TargetList => {
-                if !app.targets.is_empty() {
-                    if app.selected_target_idx.is_none() {
-                        app.selected_target_idx = Some(0);
-                    } else {
-                        let idx = app.selected_target_idx.unwrap();
-                        if idx + 1 < app.targets.len() {
-                            app.selected_target_idx = Some(idx + 1);
-                        }
+                let sub_indices = target_sub_indices(&app);
+                if !sub_indices.is_empty() {
+                    let cur = app.selected_target_idx
+                        .and_then(|i| sub_indices.iter().position(|&x| x == i))
+                        .unwrap_or(0);
+                    if cur + 1 < sub_indices.len() {
+                        app.selected_target_idx = Some(sub_indices[cur + 1]);
                     }
                 }
             }
@@ -451,28 +470,49 @@ fn handle_key_event(app: &mut App, key: KeyEvent) {
             if app.tab_selection == TabSelection::ClientList {
                 app.selected_client_idx = Some(0);
             }
-            if app.tab_selection == TabSelection::TargetList && !app.targets.is_empty() {
-                app.selected_target_idx = Some(0);
+            if app.tab_selection == TabSelection::TargetList {
+                let sub_indices = target_sub_indices(&app);
+                app.selected_target_idx = sub_indices.first().copied();
             }
         }
         KeyCode::Right => {
-            if app.tab_selection == TabSelection::ApList {
-                app.tab_selection = TabSelection::TargetList;
-                if !app.targets.is_empty() {
-                    app.selected_target_idx = Some(0);
+            // Cycle: ApList → TargetList(Clients) → TargetList(Aps) → ApList
+            match app.tab_selection {
+                TabSelection::ApList => {
+                    app.tab_selection = TabSelection::TargetList;
+                    app.target_sub_section = TargetSubSection::Clients;
+                    let sub_indices = target_sub_indices(&app);
+                    app.selected_target_idx = sub_indices.first().copied();
                 }
-            } else if app.tab_selection == TabSelection::TargetList {
-                app.tab_selection = TabSelection::ApList;
+                TabSelection::TargetList if app.target_sub_section == TargetSubSection::Clients => {
+                    app.target_sub_section = TargetSubSection::Aps;
+                    let sub_indices = target_sub_indices(&app);
+                    app.selected_target_idx = sub_indices.first().copied();
+                }
+                TabSelection::TargetList => {
+                    app.tab_selection = TabSelection::ApList;
+                }
+                TabSelection::ClientList => {}
             }
         }
         KeyCode::Left => {
-            if app.tab_selection == TabSelection::TargetList {
-                app.tab_selection = TabSelection::ApList;
-            } else if app.tab_selection == TabSelection::ApList {
-                app.tab_selection = TabSelection::TargetList;
-                if !app.targets.is_empty() {
-                    app.selected_target_idx = Some(0);
+            // Cycle: ApList → TargetList(Aps) → TargetList(Clients) → ApList
+            match app.tab_selection {
+                TabSelection::ApList => {
+                    app.tab_selection = TabSelection::TargetList;
+                    app.target_sub_section = TargetSubSection::Aps;
+                    let sub_indices = target_sub_indices(&app);
+                    app.selected_target_idx = sub_indices.first().copied();
                 }
+                TabSelection::TargetList if app.target_sub_section == TargetSubSection::Aps => {
+                    app.target_sub_section = TargetSubSection::Clients;
+                    let sub_indices = target_sub_indices(&app);
+                    app.selected_target_idx = sub_indices.first().copied();
+                }
+                TabSelection::TargetList => {
+                    app.tab_selection = TabSelection::ApList;
+                }
+                TabSelection::ClientList => {}
             }
         }
         KeyCode::Char('c') | KeyCode::Char('C') => {
@@ -488,69 +528,39 @@ fn handle_key_event(app: &mut App, key: KeyEvent) {
                 }
             }
         }
-        KeyCode::Char('f') | KeyCode::Char('F') => {
-            match app.tab_selection {
-                TabSelection::ClientList => {
-                    // Follow selected client
-                    let client_mac = if app.selected_ap_idx < app.ap_list.len() {
-                        let clients = &app.ap_list[app.selected_ap_idx].clients;
-                        let idx = app.selected_client_idx.unwrap_or(0);
-                        clients.get(idx).map(|c| c.mac.clone())
-                    } else {
-                        None
-                    };
-                    if let Some(mac) = client_mac {
-                        let result = app.toggle_follow_client(&mac.clone());
-                        let still_following = app.followed_clients.iter().any(|(m, _)| m == &mac);
-                        if still_following {
-                            app.add_log(format!(
-                                "Following client: {} ({} total)",
-                                mac,
-                                app.followed_clients.len()
-                            ));
-                            if let Some(ap_bssid) = result {
-                                app.add_log(format!("Auto-targeted AP: {}", ap_bssid));
-                            }
-                        } else {
-                            app.add_log(format!("Stopped following client: {}", mac));
-                        }
-                        if app.attack_running {
-                            let targets = app.targets.clone();
-                            if let Some(tx) = &app.attack_cmd_tx {
-                                let _ = tx.send(types::AttackCommand::UpdateTargets(targets));
-                            }
-                        }
-                    }
-                }
-                _ => {
-                    if !app.followed_clients.is_empty() {
-                        let count = app.followed_clients.len();
-                        app.followed_clients.clear();
-                        app.targets.retain(|t| !t.follow_managed);
-                        for t in app.targets.iter_mut() {
-                            t.client_filter.clear();
-                        }
-                        app.add_log(format!(
-                            "Follow mode off ({} client{} cleared)",
-                            count,
-                            if count == 1 { "" } else { "s" }
-                        ));
-                        if app.attack_running {
-                            let targets = app.targets.clone();
-                            if let Some(tx) = &app.attack_cmd_tx {
-                                let _ = tx.send(types::AttackCommand::UpdateTargets(targets));
-                            }
-                        }
-                    } else {
-                        app.tab_selection = TabSelection::ClientList;
-                        app.selected_client_idx = Some(0);
-                        app.add_log("Select a client then press 'f' to follow".to_string());
-                    }
-                }
-            }
-        }
         KeyCode::Char('t') | KeyCode::Char('T') => {
-            if !app.ap_list.is_empty() {
+            if app.tab_selection == TabSelection::ClientList {
+                // Target selected client (follow/unfollow)
+                let client_mac = if app.selected_ap_idx < app.ap_list.len() {
+                    let clients = &app.ap_list[app.selected_ap_idx].clients;
+                    let idx = app.selected_client_idx.unwrap_or(0);
+                    clients.get(idx).map(|c| c.mac.clone())
+                } else {
+                    None
+                };
+                if let Some(mac) = client_mac {
+                    let result = app.toggle_follow_client(&mac.clone());
+                    let still_following = app.followed_clients.iter().any(|(m, _)| m == &mac);
+                    if still_following {
+                        app.add_log(format!(
+                            "Client targeted: {} ({} total)",
+                            mac,
+                            app.followed_clients.len()
+                        ));
+                        if let Some(ap_bssid) = result {
+                            app.add_log(format!("Auto-targeted AP: {}", ap_bssid));
+                        }
+                    } else {
+                        app.add_log(format!("Client target removed: {}", mac));
+                    }
+                    if app.attack_running {
+                        let targets = app.targets.clone();
+                        if let Some(tx) = &app.attack_cmd_tx {
+                            let _ = tx.send(types::AttackCommand::UpdateTargets(targets));
+                        }
+                    }
+                }
+            } else if !app.ap_list.is_empty() {
                 let idx = app.selected_ap_idx.min(app.ap_list.len() - 1);
                 let bssid = app.ap_list[idx].bssid.clone();
                 let ssid = app.ap_list[idx].ssid.clone();
@@ -560,7 +570,6 @@ fn handle_key_event(app: &mut App, key: KeyEvent) {
                 } else {
                     app.add_log(format!("Target removed: {} ({})", ssid, bssid));
                 }
-                let _ = persist::save_targets(&app.targets);
             }
         }
         KeyCode::Char('d') | KeyCode::Char('D') => {
@@ -570,7 +579,6 @@ fn handle_key_event(app: &mut App, key: KeyEvent) {
                         let bssid = app.targets[idx].bssid.clone();
                         app.remove_target(idx);
                         app.add_log(format!("Target removed: {}", bssid));
-                        let _ = persist::save_targets(&app.targets);
                     }
                 }
             } else if !app.ap_list.is_empty() {
@@ -579,7 +587,6 @@ fn handle_key_event(app: &mut App, key: KeyEvent) {
                 if app.is_target(&bssid) {
                     app.toggle_target(&bssid);
                     app.add_log(format!("Target removed: {}", bssid));
-                    let _ = persist::save_targets(&app.targets);
                 }
             }
         }

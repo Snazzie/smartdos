@@ -279,6 +279,8 @@ pub struct App {
     pub list_picker_open: bool,
     pub list_picker_slots: Vec<String>,
     pub list_picker_idx: usize,
+    pub target_sub_section: TargetSubSection,
+    pub txpower_dbm: Option<i32>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -286,6 +288,13 @@ pub enum TabSelection {
     ApList,
     TargetList,
     ClientList,
+}
+
+/// Which sub-section of the Targets panel is focused
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum TargetSubSection {
+    Clients,
+    Aps,
 }
 
 impl App {
@@ -346,6 +355,8 @@ impl App {
             list_picker_open: false,
             list_picker_slots: Vec::new(),
             list_picker_idx: 0,
+            target_sub_section: TargetSubSection::Aps,
+            txpower_dbm: None,
         };
 
         (app, scanner_tx)

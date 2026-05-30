@@ -16,6 +16,7 @@ pub struct SetupState {
     pub listen_idx: Option<usize>,
     pub attack_idx: Option<usize>,
     pub cursor: usize,
+    pub txpower_dbm: Option<i32>,
 }
 
 impl SetupState {
@@ -25,6 +26,7 @@ impl SetupState {
             listen_idx: None,
             attack_idx: None,
             cursor: 0,
+            txpower_dbm: None,
         }
     }
 
@@ -38,12 +40,12 @@ impl SetupState {
 pub fn run_setup<B: Backend>(
     terminal: &mut Terminal<B>,
     interfaces: Vec<WirelessInterface>,
-) -> Result<(String, String)> {
+) -> Result<(String, String, Option<i32>)> {
     if interfaces.len() == 1 {
-        return Ok((interfaces[0].name.clone(), interfaces[0].name.clone()));
+        return Ok((interfaces[0].name.clone(), interfaces[0].name.clone(), None));
     }
     match run_setup_overlay(terminal, interfaces)? {
-        Some(pair) => Ok(pair),
+        Some(triple) => Ok(triple),
         None => std::process::exit(0),
     }
 }
@@ -52,7 +54,7 @@ pub fn run_setup<B: Backend>(
 pub fn run_setup_overlay<B: Backend>(
     terminal: &mut Terminal<B>,
     interfaces: Vec<WirelessInterface>,
-) -> Result<Option<(String, String)>> {
+) -> Result<Option<(String, String, Option<i32>)>> {
     if interfaces.is_empty() {
         return Ok(None);
     }
@@ -89,13 +91,24 @@ pub fn run_setup_overlay<B: Backend>(
                             state.attack_idx = Some(state.cursor);
                         }
                     }
+                    KeyCode::Char('+') | KeyCode::Char('=') => {
+                        let cur = state.txpower_dbm.unwrap_or(0);
+                        state.txpower_dbm = Some((cur + 1).min(30));
+                    }
+                    KeyCode::Char('-') => {
+                        match state.txpower_dbm {
+                            None => {}
+                            Some(v) if v <= 1 => state.txpower_dbm = None,
+                            Some(v) => state.txpower_dbm = Some(v - 1),
+                        }
+                    }
                     KeyCode::Enter => {
                         if state.can_confirm() {
                             let listen =
                                 state.interfaces[state.listen_idx.unwrap()].name.clone();
                             let attack =
                                 state.interfaces[state.attack_idx.unwrap()].name.clone();
-                            return Ok(Some((listen, attack)));
+                            return Ok(Some((listen, attack, state.txpower_dbm)));
                         }
                     }
                     KeyCode::Char('q') | KeyCode::Esc => return Ok(None),
@@ -110,8 +123,8 @@ fn render_setup(frame: &mut Frame, state: &SetupState) {
     let area = frame.area();
 
     let n = state.interfaces.len() as u16;
-    // border(2) + header row(1) + separator(1) + rows(n) + hint(1) + padding(1)
-    let height = 6 + n;
+    // border(2) + header row(1) + separator(1) + rows(n) + txpower(1) + hint(1) + padding(1)
+    let height = 7 + n;
     let width = 58u16;
     let popup = centered_rect(width, height, area);
 
@@ -128,7 +141,7 @@ fn render_setup(frame: &mut Frame, state: &SetupState) {
 
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Min(1), Constraint::Length(1)])
+        .constraints([Constraint::Min(1), Constraint::Length(1), Constraint::Length(1)])
         .split(inner);
 
     let rows: Vec<Row> = state
@@ -187,11 +200,22 @@ fn render_setup(frame: &mut Frame, state: &SetupState) {
 
     frame.render_widget(table, chunks[0]);
 
+    let tx_str = match state.txpower_dbm {
+        Some(dbm) => format!("TX Power: {}dBm", dbm),
+        None => "TX Power: auto".to_string(),
+    };
+    frame.render_widget(
+        Paragraph::new(format!("  {}   [+ / -]", tx_str))
+            .style(Style::default().fg(Color::Yellow))
+            .alignment(Alignment::Left),
+        chunks[1],
+    );
+
     let can_confirm = state.can_confirm();
     let hint = if can_confirm {
-        "↑↓ Move  L=Listen  A=Attack  Enter=Confirm  q=Quit"
+        "↑↓ Move  L=Listen  A=Attack  +/-=TXpwr  Enter=Confirm  q=Quit"
     } else {
-        "↑↓ Move  L=Listen  A=Attack  (assign both roles to confirm)"
+        "↑↓ Move  L=Listen  A=Attack  +/-=TXpwr  (assign both roles to confirm)"
     };
     let hint_style = if can_confirm {
         Style::default().fg(Color::Green)
@@ -203,7 +227,7 @@ fn render_setup(frame: &mut Frame, state: &SetupState) {
         Paragraph::new(hint)
             .style(hint_style)
             .alignment(Alignment::Center),
-        chunks[1],
+        chunks[2],
     );
 }
 

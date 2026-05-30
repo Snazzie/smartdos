@@ -20,8 +20,9 @@ cargo clippy
 
 # Run (requires root + Linux + monitor-capable wireless NIC)
 sudo ./target/release/smartdos [interface]   # e.g. sudo ./target/release/smartdos wlan0
-# Startup shows an authorization consent prompt. Bypass for automation:
-sudo ./target/release/smartdos --yes         # or SMARTDOS_AUTHORIZED=1
+
+# Demo mode (no root/hardware required — stub interface for UI development):
+./target/release/smartdos --demo
 
 # Tests (pure logic: frame builders, radiotap, EAPOL parse, pcap writer, IE decode)
 cargo test
@@ -69,7 +70,7 @@ main thread (TUI event loop + key handling)
 | `handshake.rs` | Platform-independent WPA-handshake/PMKID capture: `PcapWriter` (libpcap-format, radiotap linktype 127) + `eapol_endpoints` EAPOL detector. Captures land in `~/.smartdos/handshakes/session-*.pcap` (crackable with aircrack-ng/hashcat) |
 | `app.rs` | `App` state mutations: processes incoming `ScannerEvent`/`AttackEvent`, manages AP/target/client lists; session-log rotation |
 | `ui.rs` | Ratatui rendering: 4-region layout (top bar → body → logs → footer) |
-| `main.rs` | Entry point: root check, authorization consent gate, CLI arg parsing, monitor mode setup, terminal init, main event loop |
+| `main.rs` | Entry point: root check (skipped with `--demo`), CLI arg parsing, monitor mode setup, terminal init, main event loop |
 
 ### UI Layout
 

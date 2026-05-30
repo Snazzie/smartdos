@@ -239,6 +239,16 @@ pub fn disable_monitor_mode(iface: &str, mon_iface: &str) -> Result<()> {
     Ok(())
 }
 
+#[cfg(target_os = "linux")]
+pub fn discover_interfaces_demo() -> Result<Vec<WirelessInterface>> {
+    Ok(vec![WirelessInterface {
+        name: "stub0".to_string(),
+        phy: "phy0".to_string(),
+        monitor_name: Some("stub0mon".to_string()),
+        is_monitor: false,
+    }])
+}
+
 /// Check if running as root (required for monitor mode + packet injection)
 #[cfg(target_os = "linux")]
 pub fn check_root() -> bool {
@@ -317,10 +327,54 @@ pub fn get_current_channel(iface: &str) -> Result<u8> {
     Ok(0)
 }
 
+/// Read current TX power from interface info (returns dBm, None if unavailable).
+#[cfg(target_os = "linux")]
+pub fn get_txpower(iface: &str) -> Option<i32> {
+    let output = Command::new("iw").args(["dev", iface, "info"]).output().ok()?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    for line in stdout.lines() {
+        let t = line.trim();
+        if t.starts_with("txpower ") && t.ends_with("dBm") {
+            if let Some(val) = t.split_whitespace().nth(1) {
+                return val.parse::<f64>().ok().map(|f| f.round() as i32);
+            }
+        }
+    }
+    None
+}
+
+/// Set TX power on interface. None = auto, Some(dbm) = fixed at dbm dBm.
+#[cfg(target_os = "linux")]
+pub fn set_txpower(iface: &str, dbm: Option<i32>) -> Result<()> {
+    let out = match dbm {
+        None => Command::new("iw")
+            .args(["dev", iface, "set", "txpower", "auto"])
+            .output()
+            .context(format!("iw set txpower auto on {} failed", iface))?,
+        Some(v) => Command::new("iw")
+            .args(["dev", iface, "set", "txpower", "fixed", &(v * 100).to_string()])
+            .output()
+            .context(format!("iw set txpower {}dBm on {} failed", v, iface))?,
+    };
+    if !out.status.success() {
+        anyhow::bail!(
+            "iw set txpower on {} failed: {}",
+            iface,
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
+    }
+    Ok(())
+}
+
 // ── Stub implementations (non-Linux / macOS dev) ─────────────────────────────
 
 #[cfg(not(target_os = "linux"))]
 pub fn discover_interfaces() -> Result<Vec<WirelessInterface>> {
+    Ok(vec![])
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn discover_interfaces_demo() -> Result<Vec<WirelessInterface>> {
     Ok(vec![WirelessInterface {
         name: "stub0".to_string(),
         phy: "phy0".to_string(),
@@ -361,4 +415,14 @@ pub fn get_current_channel(_iface: &str) -> Result<u8> {
 pub fn detect_band_capabilities(_phy: &str) -> (bool, bool) {
     // Stub: pretend 5 GHz supported, 6 GHz not (safe default for dev)
     (true, false)
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn get_txpower(_iface: &str) -> Option<i32> {
+    None
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn set_txpower(_iface: &str, _dbm: Option<i32>) -> Result<()> {
+    Ok(())
 }
