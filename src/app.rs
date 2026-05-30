@@ -333,7 +333,7 @@ pub fn init_scanner(app: &mut App, mon_iface: &str, supports_5ghz: bool, support
     let running = app.scanner_running.clone();
     let (scanner_cmd_tx, scanner_cmd_rx) = mpsc::channel();
 
-    match scanner::start_scanner(mon_iface, scanner_tx, scanner_cmd_rx, running, supports_5ghz, supports_6ghz) {
+    match scanner::start_scanner(mon_iface, scanner_tx, scanner_cmd_rx, running, supports_5ghz, supports_6ghz, app.band_2ghz_enabled, app.band_5ghz_enabled, app.band_6ghz_enabled) {
         Ok(handle) => {
             app.monitor_interface = Some(mon_iface.to_string());
             app.scanner_cmd_tx = Some(scanner_cmd_tx);

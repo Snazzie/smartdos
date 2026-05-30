@@ -12,24 +12,38 @@ use ratatui::{
 pub struct SettingsState {
     pub burst_size: u16,
     pub send_interval_ms: u64,
+    pub band_2ghz: bool,
+    pub band_5ghz: bool,
+    pub band_6ghz: bool,
     pub cursor: usize,
 }
 
 impl SettingsState {
-    pub fn new(burst_size: u16, send_interval_ms: u64) -> Self {
-        Self { burst_size, send_interval_ms, cursor: 0 }
+    pub fn new(burst_size: u16, send_interval_ms: u64, band_2ghz: bool, band_5ghz: bool, band_6ghz: bool) -> Self {
+        Self { burst_size, send_interval_ms, band_2ghz, band_5ghz, band_6ghz, cursor: 0 }
     }
+}
+
+pub struct SettingsResult {
+    pub burst_size: u16,
+    pub send_interval_ms: u64,
+    pub band_2ghz: bool,
+    pub band_5ghz: bool,
+    pub band_6ghz: bool,
 }
 
 pub fn run_settings_overlay<B: Backend>(
     terminal: &mut Terminal<B>,
     burst_size: u16,
     send_interval_ms: u64,
-) -> Result<Option<(u16, u64)>>
+    band_2ghz: bool,
+    band_5ghz: bool,
+    band_6ghz: bool,
+) -> Result<Option<SettingsResult>>
 where
     B::Error: Send + Sync + 'static,
 {
-    let mut state = SettingsState::new(burst_size, send_interval_ms);
+    let mut state = SettingsState::new(burst_size, send_interval_ms, band_2ghz, band_5ghz, band_6ghz);
 
     loop {
         terminal.draw(|f| render_settings(f, &state))?;
@@ -43,7 +57,7 @@ where
                         }
                     }
                     KeyCode::Down => {
-                        if state.cursor < 1 {
+                        if state.cursor < 4 {
                             state.cursor += 1;
                         }
                     }
@@ -51,24 +65,40 @@ where
                         0 => {
                             state.burst_size = state.burst_size.saturating_sub(200).max(200);
                         }
-                        _ => {
+                        1 => {
                             if state.send_interval_ms > 10 {
                                 state.send_interval_ms -= 10;
                             }
                         }
+                        _ => {}
                     },
                     KeyCode::Right => match state.cursor {
                         0 => {
                             state.burst_size = state.burst_size.saturating_add(200).min(10000);
                         }
-                        _ => {
+                        1 => {
                             if state.send_interval_ms < 2000 {
                                 state.send_interval_ms += 10;
                             }
                         }
+                        _ => {}
                     },
-                    KeyCode::Enter => {
-                        return Ok(Some((state.burst_size, state.send_interval_ms)));
+                    KeyCode::Char(' ') | KeyCode::Enter if state.cursor >= 2 => {
+                        match state.cursor {
+                            2 => state.band_2ghz = !state.band_2ghz,
+                            3 => state.band_5ghz = !state.band_5ghz,
+                            4 => state.band_6ghz = !state.band_6ghz,
+                            _ => {}
+                        }
+                    }
+                    KeyCode::Enter if state.cursor < 2 => {
+                        return Ok(Some(SettingsResult {
+                            burst_size: state.burst_size,
+                            send_interval_ms: state.send_interval_ms,
+                            band_2ghz: state.band_2ghz,
+                            band_5ghz: state.band_5ghz,
+                            band_6ghz: state.band_6ghz,
+                        }));
                     }
                     KeyCode::Char('q') | KeyCode::Esc => return Ok(None),
                     _ => {}
@@ -80,12 +110,12 @@ where
 
 fn render_settings(frame: &mut Frame, state: &SettingsState) {
     let area = frame.area();
-    let popup = centered_rect(46, 8, area);
+    let popup = centered_rect(52, 11, area);
 
     frame.render_widget(Clear, popup);
 
     let block = Block::default()
-        .title(Line::from(" smartdos — Attack Settings "))
+        .title(Line::from(" smartdos — Settings "))
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(Color::Yellow));
@@ -98,39 +128,65 @@ fn render_settings(frame: &mut Frame, state: &SettingsState) {
         .constraints([Constraint::Min(1), Constraint::Length(1)])
         .split(inner);
 
-    let fields: [(& str, String, &str, usize); 2] = [
-        ("Burst Size", format!("{}", state.burst_size), "frames/target  (200–10000, step 200)", 0),
-        ("Send Interval", format!("{}", state.send_interval_ms), "ms  (10–2000)", 1),
-    ];
+    let mut rows: Vec<Row> = Vec::new();
 
-    let rows: Vec<Row> = fields.iter().map(|(label, value, unit, idx)| {
-        let is_sel = state.cursor == *idx;
-        let label_style = if is_sel {
-            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
-        } else {
-            Style::default().fg(Color::White)
-        };
-        let value_style = if is_sel {
-            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)
-        } else {
-            Style::default().fg(Color::Gray)
-        };
+    // Row 0: Burst Size
+    {
+        let is_sel = state.cursor == 0;
+        let label_style = sel_style(is_sel, Color::White);
+        let value_style = sel_style(is_sel, Color::Gray);
         let arrow = if is_sel { "◄ ►" } else { "   " };
-        Row::new(vec![
-            Cell::from(Span::styled(format!("{}{}", if is_sel { "▶ " } else { "  " }, label), label_style)),
-            Cell::from(Span::styled(format!("{:>5}", value), value_style)),
-            Cell::from(Span::styled(unit.to_string(), Style::default().fg(Color::DarkGray))),
+        rows.push(Row::new(vec![
+            Cell::from(Span::styled(format!("{}Burst Size", if is_sel { "▶ " } else { "  " }), label_style)),
+            Cell::from(Span::styled(format!("{:>5}", state.burst_size), value_style)),
+            Cell::from(Span::styled("frames/target  (200–10000, step 200)", Style::default().fg(Color::DarkGray))),
             Cell::from(Span::styled(arrow, Style::default().fg(Color::Cyan))),
-        ])
-    }).collect();
+        ]));
+    }
+
+    // Row 1: Send Interval
+    {
+        let is_sel = state.cursor == 1;
+        let label_style = sel_style(is_sel, Color::White);
+        let value_style = sel_style(is_sel, Color::Gray);
+        let arrow = if is_sel { "◄ ►" } else { "   " };
+        rows.push(Row::new(vec![
+            Cell::from(Span::styled(format!("{}Send Interval", if is_sel { "▶ " } else { "  " }), label_style)),
+            Cell::from(Span::styled(format!("{:>5}", state.send_interval_ms), value_style)),
+            Cell::from(Span::styled("ms  (10–2000)", Style::default().fg(Color::DarkGray))),
+            Cell::from(Span::styled(arrow, Style::default().fg(Color::Cyan))),
+        ]));
+    }
+
+    // Rows 2–4: band toggles
+    let bands: [(usize, &str, bool); 3] = [
+        (2, "2.4 GHz band", state.band_2ghz),
+        (3, "5 GHz band",   state.band_5ghz),
+        (4, "6 GHz band",   state.band_6ghz),
+    ];
+    for (idx, label, enabled) in bands {
+        let is_sel = state.cursor == idx;
+        let label_style = sel_style(is_sel, Color::White);
+        let (toggle_text, toggle_color) = if enabled {
+            (" ON ", Color::Green)
+        } else {
+            ("OFF ", Color::Red)
+        };
+        rows.push(Row::new(vec![
+            Cell::from(Span::styled(format!("{}{}", if is_sel { "▶ " } else { "  " }, label), label_style)),
+            Cell::from(Span::styled(format!("{:>5}", ""), Style::default())),
+            Cell::from(Span::styled("Space/Enter to toggle", Style::default().fg(Color::DarkGray))),
+            Cell::from(Span::styled(toggle_text, Style::default().fg(toggle_color).add_modifier(Modifier::BOLD))),
+        ]));
+    }
 
     let table = Table::new(
         rows,
         [
-            Constraint::Length(16),
+            Constraint::Length(18),
             Constraint::Length(6),
-            Constraint::Min(16),
-            Constraint::Length(3),
+            Constraint::Min(22),
+            Constraint::Length(4),
         ],
     );
 
@@ -141,13 +197,21 @@ fn render_settings(frame: &mut Frame, state: &SettingsState) {
         Span::raw(" field  "),
         Span::styled("◄►", Style::default().fg(Color::Cyan)),
         Span::raw(" adjust  "),
-        Span::styled("Enter", Style::default().fg(Color::Green)),
-        Span::raw(" confirm  "),
+        Span::styled("Space", Style::default().fg(Color::Cyan)),
+        Span::raw(" toggle  "),
         Span::styled("Esc", Style::default().fg(Color::Red)),
         Span::raw(" cancel"),
     ]))
     .alignment(Alignment::Center);
     frame.render_widget(hint, chunks[1]);
+}
+
+fn sel_style(is_sel: bool, base: Color) -> Style {
+    if is_sel {
+        Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(base)
+    }
 }
 
 fn centered_rect(width: u16, height: u16, area: Rect) -> Rect {

@@ -26,6 +26,9 @@ pub fn start_scanner(
     running: Arc<AtomicBool>,
     supports_5ghz: bool,
     supports_6ghz: bool,
+    band_2ghz_enabled: bool,
+    band_5ghz_enabled: bool,
+    band_6ghz_enabled: bool,
 ) -> Result<std::thread::JoinHandle<()>> {
     let iface = iface.to_string();
 
@@ -56,7 +59,10 @@ pub fn start_scanner(
             let mut last_cleanup = Instant::now();
             let mut last_channel_hop = Instant::now();
             let mut channel_idx = 0usize;
-            let scan_channels = scan_channels_for(supports_5ghz, supports_6ghz);
+            let mut band_2ghz_en = band_2ghz_enabled;
+            let mut band_5ghz_en = band_5ghz_enabled;
+            let mut band_6ghz_en = band_6ghz_enabled;
+            let mut scan_channels = scan_channels_for(supports_5ghz, supports_6ghz, band_2ghz_en, band_5ghz_en, band_6ghz_en);
             let mut locked = false;
             let mut sweep_mac: Option<String> = None;
             // Lazily-created handshake/PMKID capture file (opened on first EAPOL).
@@ -86,6 +92,13 @@ pub fn start_scanner(
                         ScannerCommand::SweepFor { client_mac } => {
                             sweep_mac = Some(client_mac);
                             locked = false;
+                        }
+                        ScannerCommand::UpdateBands { band_2ghz, band_5ghz, band_6ghz } => {
+                            band_2ghz_en = band_2ghz;
+                            band_5ghz_en = band_5ghz;
+                            band_6ghz_en = band_6ghz;
+                            scan_channels = scan_channels_for(supports_5ghz, supports_6ghz, band_2ghz_en, band_5ghz_en, band_6ghz_en);
+                            channel_idx = 0;
                         }
                     }
                 }
@@ -999,7 +1012,7 @@ fn start_scanner_demo(
                 "[DEMO] Scanner started — using fake data".into(),
             ));
 
-            let scan_channels = scan_channels_for(supports_5ghz, supports_6ghz);
+            let scan_channels = scan_channels_for(supports_5ghz, supports_6ghz, true, true, true);
 
             // Emit initial AP list filtered to enabled bands
             for (bssid, ssid, ch, dbm, enc, band) in FAKE_APS {
@@ -1226,6 +1239,9 @@ pub fn start_scanner(
     running: Arc<AtomicBool>,
     supports_5ghz: bool,
     supports_6ghz: bool,
+    _band_2ghz_enabled: bool,
+    _band_5ghz_enabled: bool,
+    _band_6ghz_enabled: bool,
 ) -> Result<std::thread::JoinHandle<()>> {
     start_scanner_demo(event_tx, running, supports_5ghz, supports_6ghz)
 }

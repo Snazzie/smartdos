@@ -68,14 +68,23 @@ pub fn freq_to_channel(freq_mhz: u32) -> u8 {
     }
 }
 
-/// Build the full scan channel list filtered to bands the interface supports.
-pub fn scan_channels_for(supports_5ghz: bool, supports_6ghz: bool) -> Vec<(u8, Band)> {
+/// Build the full scan channel list filtered to bands the interface supports
+/// and the user has enabled.
+pub fn scan_channels_for(
+    supports_5ghz: bool,
+    supports_6ghz: bool,
+    band_2ghz_enabled: bool,
+    band_5ghz_enabled: bool,
+    band_6ghz_enabled: bool,
+) -> Vec<(u8, Band)> {
     let mut v = Vec::new();
-    for &ch in CHANNELS_2GHZ { v.push((ch, Band::TwoGHz)); }
-    if supports_5ghz {
+    if band_2ghz_enabled {
+        for &ch in CHANNELS_2GHZ { v.push((ch, Band::TwoGHz)); }
+    }
+    if supports_5ghz && band_5ghz_enabled {
         for &ch in CHANNELS_5GHZ { v.push((ch, Band::FiveGHz)); }
     }
-    if supports_6ghz {
+    if supports_6ghz && band_6ghz_enabled {
         for &ch in CHANNELS_6GHZ { v.push((ch, Band::SixGHz)); }
     }
     v
@@ -229,6 +238,7 @@ pub enum ScannerCommand {
     LockChannel(u8, Band),
     SweepFor { client_mac: String },
     FreeHop,
+    UpdateBands { band_2ghz: bool, band_5ghz: bool, band_6ghz: bool },
 }
 
 /// Wireless interface info
@@ -303,6 +313,9 @@ pub struct App {
     pub sys: System,
     pub channel_focused: bool, // true while locked to an AP's channel for client discovery
     pub ap_filter: String,     // live SSID/BSSID filter text; empty = show all
+    pub band_2ghz_enabled: bool,
+    pub band_5ghz_enabled: bool,
+    pub band_6ghz_enabled: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -385,6 +398,9 @@ impl App {
             sys: System::new_all(),
             channel_focused: false,
             ap_filter: String::new(),
+            band_2ghz_enabled: true,
+            band_5ghz_enabled: true,
+            band_6ghz_enabled: true,
         };
 
         (app, scanner_tx)

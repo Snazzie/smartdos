@@ -228,25 +228,49 @@ where
 
         if app.wants_settings {
             app.wants_settings = false;
-            if let Ok(Some((burst, interval))) = settings::run_settings_overlay(terminal, app.burst_size, app.send_interval_ms) {
-                app.burst_size = burst;
-                app.send_interval_ms = interval;
-                app.add_log(format!("Settings: burst={} interval={}ms", burst, interval));
+            if let Ok(Some(result)) = settings::run_settings_overlay(
+                terminal,
+                app.burst_size,
+                app.send_interval_ms,
+                app.band_2ghz_enabled,
+                app.band_5ghz_enabled,
+                app.band_6ghz_enabled,
+            ) {
+                app.burst_size = result.burst_size;
+                app.send_interval_ms = result.send_interval_ms;
+                app.band_2ghz_enabled = result.band_2ghz;
+                app.band_5ghz_enabled = result.band_5ghz;
+                app.band_6ghz_enabled = result.band_6ghz;
+                app.add_log(format!(
+                    "Settings: burst={} interval={}ms bands={}{}{}",
+                    result.burst_size,
+                    result.send_interval_ms,
+                    if result.band_2ghz { "2G" } else { "" },
+                    if result.band_5ghz { " 5G" } else { "" },
+                    if result.band_6ghz { " 6G" } else { "" },
+                ));
                 let _ = persist::save_attack_settings(&persist::AttackSettings {
                     attack_type: app.attack_type,
                     attack_mode: app.attack_mode,
-                    burst_size: burst,
-                    send_interval_ms: interval,
+                    burst_size: result.burst_size,
+                    send_interval_ms: result.send_interval_ms,
                     pursuit_mode: app.pursuit_mode,
                     deauth_scope: app.deauth_scope.clone(),
                 });
                 if app.attack_running {
                     if let Some(ref tx) = app.attack_cmd_tx {
                         let _ = tx.send(types::AttackCommand::UpdateSettings {
-                            burst_size: burst,
-                            send_interval_ms: interval,
+                            burst_size: result.burst_size,
+                            send_interval_ms: result.send_interval_ms,
                         });
                     }
+                }
+                if let Some(ref tx) = app.scanner_cmd_tx {
+                    let _ = tx.send(types::ScannerCommand::UpdateBands {
+                        band_2ghz: result.band_2ghz,
+                        band_5ghz: result.band_5ghz,
+                        band_6ghz: result.band_6ghz,
+                    });
                 }
             }
         }
