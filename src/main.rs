@@ -532,13 +532,34 @@ fn handle_key_event(app: &mut App, key: KeyEvent) {
         KeyCode::Char('c') | KeyCode::Char('C') => {
             match app.tab_selection {
                 TabSelection::ClientList => {
-                    // Leave client list back to AP list
+                    // Leave client list — resume broad scanning
                     app.tab_selection = TabSelection::ApList;
+                    if app.channel_focused {
+                        app.channel_focused = false;
+                        if let Some(ref tx) = app.scanner_cmd_tx {
+                            let _ = tx.send(types::ScannerCommand::FreeHop);
+                        }
+                        app.add_log("Focus mode off — resuming channel scan".to_string());
+                    }
                 }
                 _ => {
-                    // Open client list for selected AP
+                    // Open client list and lock scanner to AP's channel
                     app.tab_selection = TabSelection::ClientList;
                     app.selected_client_idx = Some(0);
+                    if let Some(ap) = app.ap_list.get(app.selected_ap_idx) {
+                        let ch = ap.channel;
+                        let band = ap.band;
+                        if ch != 0 {
+                            app.channel_focused = true;
+                            if let Some(ref tx) = app.scanner_cmd_tx {
+                                let _ = tx.send(types::ScannerCommand::LockChannel(ch, band));
+                            }
+                            app.add_log(format!(
+                                "Focus mode: locked to ch{} ({}) for client discovery",
+                                ch, band.label()
+                            ));
+                        }
+                    }
                 }
             }
         }

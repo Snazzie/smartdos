@@ -352,6 +352,7 @@ fn parse_beacon_frame_raw(data: &[u8]) -> Option<AccessPoint> {
     // Parse tagged parameters
     let mut ssid = String::new();
     let mut channel: u8 = 0;
+    let mut ht_channel: u8 = 0; // HT Operation IE (tag 61) primary channel — present on 5GHz when tag 3 is absent
     let mut encryption = "OPEN".to_string();
 
     let mut pos = 12;
@@ -379,6 +380,12 @@ fn parse_beacon_frame_raw(data: &[u8]) -> Option<AccessPoint> {
                     channel = tag_value[0];
                 }
             }
+            61 => {
+                // HT Operation: first byte is primary channel — reliable on 5GHz
+                if tag_length >= 1 {
+                    ht_channel = tag_value[0];
+                }
+            }
             48 => {
                 encryption = parse_rsn_ie(tag_value);
             }
@@ -400,12 +407,16 @@ fn parse_beacon_frame_raw(data: &[u8]) -> Option<AccessPoint> {
         return None;
     }
 
-    // Determine band: prefer radiotap frequency, fall back to channel number heuristic
+    // Determine band: prefer radiotap frequency, fall back to channel IEs.
+    // Use HT Operation (tag 61) primary channel when DS Parameter Set (tag 3) is absent —
+    // 5GHz APs commonly omit tag 3, leaving channel=0 which would falsely map to 2.4GHz.
+    let effective_channel = if channel != 0 { channel } else { ht_channel };
     let band = parse_radiotap_freq(data)
         .map(freq_to_band)
         .unwrap_or_else(|| {
-            if channel <= 14 { Band::TwoGHz }
-            else { Band::FiveGHz } // 6 GHz shares numbers with 5 GHz — radiotap required for disambiguation
+            if effective_channel > 14 { Band::FiveGHz }
+            else if effective_channel != 0 { Band::TwoGHz }
+            else { Band::TwoGHz } // unknown channel — assume 2.4GHz
         });
 
     let signal_percent = if signal_dbm >= -30 {
@@ -420,7 +431,7 @@ fn parse_beacon_frame_raw(data: &[u8]) -> Option<AccessPoint> {
         bssid,
         ssid,
         band,
-        channel,
+        channel: effective_channel,
         signal_dbm,
         signal_percent,
         packets: 0,
@@ -744,10 +755,11 @@ fn parse_radiotap_freq(data: &[u8]) -> Option<u32> {
         return None;
     }
     let mut offset = 8usize;
-    if present & (1 << 0) != 0 { offset += 8; } // TSFT
-    if present & (1 << 1) != 0 { offset += 1; } // Flags
-    if present & (1 << 2) != 0 { offset += 1; } // Rate
-    // bit 3 = Channel: u16 freq + u16 flags
+    if present & (1 << 0) != 0 { offset += 8; } // TSFT: u64 (align 8)
+    if present & (1 << 1) != 0 { offset += 1; } // Flags: u8
+    if present & (1 << 2) != 0 { offset += 1; } // Rate: u8
+    // Channel field is u16 — must be 2-byte aligned
+    if offset % 2 != 0 { offset += 1; }
     if offset + 2 > data.len() {
         return None;
     }

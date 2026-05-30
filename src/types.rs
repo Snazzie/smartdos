@@ -290,6 +290,7 @@ pub struct App {
     pub txpower_dbm: Option<i32>,
     pub cpu_usage: f32,
     pub sys: System,
+    pub channel_focused: bool, // true while locked to an AP's channel for client discovery
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -370,6 +371,7 @@ impl App {
             txpower_dbm: None,
             cpu_usage: 0.0,
             sys: System::new_all(),
+            channel_focused: false,
         };
 
         (app, scanner_tx)

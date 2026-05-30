@@ -70,7 +70,8 @@ fn render_top_bar(frame: &mut Frame, app: &App, area: Rect) {
         Some(dbm) => format!(" TX:{}dBm", dbm),
         None => " TX:auto".to_string(),
     };
-    let ch_info = format!(" ch:{}/{}{tx_str}] ", app.current_channel, app.current_band.label());
+    let focus_str = if app.channel_focused { " [FOCUS]" } else { "" };
+    let ch_info = format!(" ch:{}/{}{}{tx_str}] ", app.current_channel, app.current_band.label(), focus_str);
 
     let mode_str = match app.state {
         crate::types::AppState::Scanning => " SCAN ",
@@ -948,7 +949,7 @@ fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
         TabSelection::ApList => {
             add(&mut spans, "↑↓", "nav");
             add(&mut spans, "t", "target");
-            add(&mut spans, "c", "clients");
+            add(&mut spans, "c", "clients+focus");
             add(&mut spans, "r", "clear scan");
         }
         TabSelection::TargetList => {
@@ -961,7 +962,7 @@ fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
             add(&mut spans, "↑↓", "select");
             add(&mut spans, "t", "target");
             add(&mut spans, "n", "rename");
-            add(&mut spans, "c/Esc", "back");
+            add(&mut spans, "c/Esc", "back+unfocus");
         }
     }
 
