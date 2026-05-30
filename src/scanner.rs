@@ -97,8 +97,17 @@ pub fn start_scanner(
                 {
                     channel_idx = (channel_idx + 1) % scan_channels.len();
                     let (ch, band) = scan_channels[channel_idx];
-                    if let Err(e) = set_channel(&iface, ch, band) {
-                        let _ = event_tx.send(ScannerEvent::Error(format!("Channel hop failed: {}", e)));
+                    match set_channel(&iface, ch, band) {
+                        Ok(()) => {
+                            let _ = event_tx.send(ScannerEvent::Error(format!(
+                                "Hop → ch{} ({})", ch, band.label()
+                            )));
+                        }
+                        Err(e) => {
+                            let _ = event_tx.send(ScannerEvent::Error(format!(
+                                "Channel hop failed ch{} ({}): {}", ch, band.label(), e
+                            )));
+                        }
                     }
                     let _ = event_tx.send(ScannerEvent::ChannelChanged { channel: ch, band });
                     last_channel_hop = Instant::now();

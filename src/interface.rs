@@ -293,8 +293,11 @@ pub fn detect_band_capabilities(phy: &str) -> (bool, bool) {
     let stdout = String::from_utf8_lossy(&output.stdout);
     let mut has_5 = false;
     let mut has_6 = false;
+    // Lines look like: "\t\t* 5180 MHz [36] (23.0 dBm)"
+    // Strip leading "* " before splitting to get the frequency as first token.
     for line in stdout.lines() {
-        if let Some(freq_str) = line.trim().split_whitespace().next() {
+        let t = line.trim().trim_start_matches('*').trim();
+        if let Some(freq_str) = t.split_whitespace().next() {
             if let Ok(mhz) = freq_str.parse::<u32>() {
                 if (5180..=5825).contains(&mhz) { has_5 = true; }
                 if (5925..=7125).contains(&mhz) { has_6 = true; }
