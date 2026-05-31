@@ -512,14 +512,26 @@ impl App {
             if entry.1.as_deref() != Some(ap_bssid) {
                 let old_ap = entry.1.clone();
                 entry.1 = Some(ap_bssid.to_string());
+                let old_label = old_ap
+                    .as_deref()
+                    .map(|b| self.ap_label(b))
+                    .unwrap_or_else(|| "?".to_string());
+                let new_label = self.ap_label(ap_bssid);
                 self.add_log(format!(
                     "Followed {} roamed: {} → {}",
-                    client_mac,
-                    old_ap.as_deref().unwrap_or("?"),
-                    ap_bssid
+                    client_mac, old_label, new_label
                 ));
                 self.rebuild_follow_targets();
             }
+        }
+    }
+
+    /// Human label for an AP BSSID: "SSID (BSSID)" when the AP and its SSID are
+    /// known, otherwise the raw BSSID alone.
+    fn ap_label(&self, bssid: &str) -> String {
+        match self.ap_list.iter().find(|a| a.bssid == bssid) {
+            Some(ap) if !ap.ssid.is_empty() => format!("{} ({})", ap.ssid, bssid),
+            _ => bssid.to_string(),
         }
     }
 

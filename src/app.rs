@@ -70,12 +70,38 @@ pub fn clear_scan_results(app: &mut App) {
     let _ = persist::save_ap_list(&[]);
 }
 
+/// Align a matching target's channel/band with the AP the scanner just observed.
+/// This corrects stale channel numbers carried in loaded target lists as the real
+/// APs are rediscovered. Channel-following injection during an active attack stays
+/// opt-in via pursuit mode.
+fn sync_target_to_discovered_ap(app: &mut App, bssid: &str, channel: u8, band: Band) {
+    if channel == 0 {
+        return;
+    }
+    if let Some(target) = app.targets.iter_mut().find(|t| t.bssid == bssid) {
+        if target.channel != channel {
+            target.channel = channel;
+            target.band = band;
+            if app.pursuit_mode && app.attack_running {
+                if let Some(ref tx) = app.attack_cmd_tx {
+                    let _ = tx.send(AttackCommand::UpdateTargetChannel {
+                        bssid: bssid.to_string(),
+                        channel,
+                        band,
+                    });
+                }
+            }
+        }
+    }
+}
+
 /// Process events from the scanner thread
 fn process_scanner_events(app: &mut App) {
     loop {
         match app.scanner_rx.try_recv() {
             Ok(event) => match event {
                 ScannerEvent::ApDiscovered(ap) => {
+                    let (bssid, channel, band) = (ap.bssid.clone(), ap.channel, ap.band);
                     if let Some(existing) = app.ap_list.iter_mut().find(|a| a.bssid == ap.bssid) {
                         existing.signal_dbm = ap.signal_dbm;
                         existing.signal_percent = ap.signal_percent;
@@ -87,6 +113,8 @@ fn process_scanner_events(app: &mut App) {
                         app.ap_list.push(ap);
                         app.ap_list.sort_by(|a, b| b.signal_dbm.cmp(&a.signal_dbm));
                     }
+                    // Correct any loaded target's channel/band as we rediscover its AP.
+                    sync_target_to_discovered_ap(app, &bssid, channel, band);
                 }
                 ScannerEvent::ApUpdated(ap) => {
                     if let Some(existing) = app.ap_list.iter_mut().find(|a| a.bssid == ap.bssid) {
@@ -122,23 +150,10 @@ fn process_scanner_events(app: &mut App) {
                     if app.ap_list.len() > 1 {
                         app.ap_list.sort_by(|a, b| b.signal_dbm.cmp(&a.signal_dbm));
                     }
-                    // Pursuit mode: if target AP changed channel, notify attack thread
-                    if app.pursuit_mode && app.attack_running {
-                        let new_ch = ap.channel;
-                        let bssid = ap.bssid.clone();
-                        if let Some(target) = app.targets.iter_mut().find(|t| t.bssid == bssid) {
-                            if target.channel != new_ch && new_ch > 0 {
-                                target.channel = new_ch;
-                                if let Some(ref tx) = app.attack_cmd_tx {
-                                    let _ = tx.send(AttackCommand::UpdateTargetChannel {
-                                        bssid,
-                                        channel: new_ch,
-                                        band: ap.band,
-                                    });
-                                }
-                            }
-                        }
-                    }
+                    // Keep any matching target's channel/band aligned with the AP's
+                    // real channel (corrects stale channels from loaded lists);
+                    // mid-attack channel following stays opt-in via pursuit mode.
+                    sync_target_to_discovered_ap(app, &ap.bssid, ap.channel, ap.band);
                 }
                 ScannerEvent::ApGone(_bssid) => {
                     // APs persist until user clears with 'r'
