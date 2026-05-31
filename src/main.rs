@@ -713,6 +713,35 @@ fn handle_key_event(app: &mut App, key: KeyEvent) {
         KeyCode::Char('g') | KeyCode::Char('G') => {
             app.wants_settings = true;
         }
+        KeyCode::Char('h') | KeyCode::Char('H') => {
+            if app.tab_selection == TabSelection::ApList && !app.ap_list.is_empty() {
+                let idx = app.selected_ap_idx.min(app.ap_list.len() - 1);
+                let bssid = app.ap_list[idx].bssid.clone();
+                let ssid = app.ap_list[idx].ssid.clone();
+                let now_harvesting = app.toggle_ap_harvest(&bssid);
+                if now_harvesting {
+                    let n = app.followed_clients.iter()
+                        .filter(|(_, ap)| ap.as_deref() == Some(&bssid))
+                        .count();
+                    app.add_log(format!(
+                        "Harvest ON: {} ({} clients auto-followed)",
+                        if ssid.is_empty() { &bssid } else { &ssid },
+                        n
+                    ));
+                } else {
+                    app.add_log(format!(
+                        "Harvest OFF: {}",
+                        if ssid.is_empty() { &bssid } else { &ssid }
+                    ));
+                }
+                if app.attack_running {
+                    let targets = app.targets.clone();
+                    if let Some(tx) = &app.attack_cmd_tx {
+                        let _ = tx.send(types::AttackCommand::UpdateTargets(targets));
+                    }
+                }
+            }
+        }
         KeyCode::Char('a') | KeyCode::Char('A') => {
             app::toggle_attack_type(app);
             let _ = persist::save_attack_settings(&persist::AttackSettings {
