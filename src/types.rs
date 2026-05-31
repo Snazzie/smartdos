@@ -154,20 +154,18 @@ impl AttackMode {
     }
 }
 
-/// Attack type: deauth frames, auth-flood DoS, or beacon flood
+/// Attack type: deauth frames or auth-flood DoS
 #[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum AttackType {
     Deauth,
     AuthDos,
-    BeaconFlood,
 }
 
 impl AttackType {
     pub fn toggle(&self) -> Self {
         match self {
             AttackType::Deauth => AttackType::AuthDos,
-            AttackType::AuthDos => AttackType::BeaconFlood,
-            AttackType::BeaconFlood => AttackType::Deauth,
+            AttackType::AuthDos => AttackType::Deauth,
         }
     }
 
@@ -175,7 +173,6 @@ impl AttackType {
         match self {
             AttackType::Deauth => "Deauth",
             AttackType::AuthDos => "AuthDos",
-            AttackType::BeaconFlood => "BeaconFlood",
         }
     }
 }

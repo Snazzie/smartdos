@@ -802,7 +802,7 @@ fn render_logs(frame: &mut Frame, app: &App, area: Rect) {
     let ctrl_text = Text::from(vec![
         Line::from(Span::styled(
             type_txt,
-            Style::default().fg(if app.attack_type == AttackType::AuthDos || app.attack_type == AttackType::BeaconFlood {
+            Style::default().fg(if app.attack_type == AttackType::AuthDos {
                 Color::Magenta
             } else {
                 Color::Cyan

