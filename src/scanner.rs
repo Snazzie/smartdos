@@ -239,19 +239,30 @@ pub fn start_scanner(
     Ok(handle)
 }
 
-/// Set channel on a monitor interface via frequency (fire-and-forget).
-/// Uses spawn() instead of output() to avoid blocking the scanner thread —
-/// iw can block indefinitely on DFS/CAC channels or slow drivers.
+/// Tune a monitor interface to `channel` on `band`, reporting failure.
+///
+/// Uses output() (not fire-and-forget spawn) so a rejected tune surfaces as an
+/// error the caller can log instead of vanishing — e.g. `iw set freq` refused
+/// because the active regulatory domain doesn't permit that channel (the exact
+/// trap that hid 5 GHz UNII-1 being unreachable under a bad regdomain). Only
+/// non-DFS channels are ever passed here (see CHANNELS_5GHZ), so iw returns
+/// promptly and never blocks on DFS/CAC.
 #[cfg(all(not(feature = "demo"), target_os = "linux"))]
 fn set_channel(iface: &str, channel: u8, band: Band) -> Result<()> {
     let freq = channel_to_freq_mhz(channel, band);
-    std::process::Command::new("iw")
+    let out = std::process::Command::new("iw")
         .args(["dev", iface, "set", "freq", &freq.to_string()])
         .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .context(format!("Failed to spawn iw for freq {} MHz on {}", freq, iface))?;
+        .output()
+        .context(format!("Failed to run iw for freq {} MHz on {}", freq, iface))?;
+    if !out.status.success() {
+        anyhow::bail!(
+            "iw set freq {} MHz (ch {}) rejected: {}",
+            freq,
+            channel,
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
+    }
     Ok(())
 }
 

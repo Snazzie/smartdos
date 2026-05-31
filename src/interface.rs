@@ -8,10 +8,18 @@ use crate::types::{Band, WirelessInterface};
 #[cfg(target_os = "linux")]
 use crate::types::channel_to_freq_mhz;
 
-/// Regulatory country code with the most permissive TX-power / DFS rules.
-/// Bolivia (BO) allows up to ~30 dBm on 2.4 GHz and high 5 GHz power with
-/// minimal DFS — without it `iw set txpower fixed` is clamped to the local cap.
-pub const UNRESTRICTED_REG: &str = "BO";
+/// Regulatory country code that unlocks max TX power AND full non-DFS channel
+/// coverage. India (IN) permits 30 dBm on 2.4 GHz, 30 dBm on UNII-1
+/// (5150–5250 MHz, ch 36–48) and 30 dBm on UNII-3 (5725–5875 MHz, ch 149–165),
+/// none of them NO-IR — so the scanner can actually tune every non-DFS 5 GHz
+/// channel in CHANNELS_5GHZ, and `iw set txpower fixed` isn't clamped.
+///
+/// Do NOT use BO here: Bolivia's regdomain omits UNII-1 entirely (its only
+/// non-DFS 5 GHz allowance is 5735–5835) and caps 2.4 GHz at 20 dBm, so
+/// `iw set freq` to ch 36–48 — where most home/office 5 GHz APs sit — is
+/// rejected and those APs never get scanned. (Self-managed cards ignore
+/// `iw reg set` regardless; see set_channel's surfaced errors.)
+pub const UNRESTRICTED_REG: &str = "IN";
 
 /// Parse the active country code from `iw reg get` output (the `country XX:`
 /// line). Pure + cross-platform so it can be unit-tested. Returns the 2-char
