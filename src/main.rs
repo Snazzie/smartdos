@@ -13,7 +13,7 @@ mod ui;
 
 use anyhow::Result;
 use crossterm::{
-    event::{self, Event, KeyCode, KeyEvent},
+    event::{self, Event, KeyCode, KeyEvent, KeyModifiers},
     execute,
     terminal::{self, EnterAlternateScreen, LeaveAlternateScreen},
 };
@@ -357,6 +357,16 @@ fn reconfigure_adapters(app: &mut App, listen: String, attack: String, txpower: 
 }
 
 fn handle_key_event(app: &mut App, key: KeyEvent) {
+    // Some terminals / remote-control layers (e.g. macOS screen sharing, VNC) emit the
+    // Delete/Backspace key as ^H (byte 0x08) instead of ^? (0x7F). crossterm parses 0x08
+    // as Char('h')+CONTROL, so without this it lands in the generic Char(c) arm and types
+    // an 'h'. Normalize Ctrl+H to Backspace so deletion works through remote control.
+    let key = if key.code == KeyCode::Char('h') && key.modifiers.contains(KeyModifiers::CONTROL) {
+        KeyEvent { code: KeyCode::Backspace, ..key }
+    } else {
+        key
+    };
+
     // AP filter mode — intercept typing; Up/Down still navigate the filtered list
     if app.input_mode == InputMode::ApFilter {
         match key.code {
@@ -839,4 +849,36 @@ fn shutdown<B: Backend>(_terminal: &mut Terminal<B>, app: &App) {
         "Total deauth frames sent: {}",
         app.targets.iter().map(|t| t.deauth_count).sum::<u64>()
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Remote-control / VNC sends Delete as ^H (0x08), which crossterm reports as
+    // Char('h')+CONTROL. It must delete a character from the AP filter, not type 'h'.
+    #[test]
+    fn ctrl_h_deletes_in_ap_filter() {
+        let (mut app, _tx) = App::new();
+        app.input_mode = InputMode::ApFilter;
+        app.ap_filter = "abc".to_string();
+
+        let ctrl_h = KeyEvent::new(KeyCode::Char('h'), KeyModifiers::CONTROL);
+        handle_key_event(&mut app, ctrl_h);
+
+        assert_eq!(app.ap_filter, "ab", "Ctrl+H should delete, not insert 'h'");
+    }
+
+    // A plain 'h' keystroke must still type into the filter.
+    #[test]
+    fn plain_h_types_in_ap_filter() {
+        let (mut app, _tx) = App::new();
+        app.input_mode = InputMode::ApFilter;
+        app.ap_filter = "ab".to_string();
+
+        let h = KeyEvent::new(KeyCode::Char('h'), KeyModifiers::NONE);
+        handle_key_event(&mut app, h);
+
+        assert_eq!(app.ap_filter, "abh");
+    }
 }
