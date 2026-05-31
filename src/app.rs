@@ -169,6 +169,23 @@ fn process_scanner_events(app: &mut App) {
                     }
                     maybe_update_follow(app, &client.mac, &ap_bssid);
                     handle_sweep_match(app, &client.mac, &ap_bssid);
+                    if app.is_ap_harvested(&ap_bssid) {
+                        if !app.followed_clients.iter().any(|(m, _)| m == &client.mac) {
+                            let ssid = app.ap_list.iter()
+                                .find(|a| a.bssid == ap_bssid)
+                                .map(|a| a.ssid.clone())
+                                .unwrap_or_else(|| ap_bssid.clone());
+                            app.followed_clients.push((client.mac.clone(), Some(ap_bssid.clone())));
+                            app.rebuild_follow_targets();
+                            app.add_log(format!("Harvested: {} from {}", client.mac, ssid));
+                            if app.attack_running {
+                                let targets = app.targets.clone();
+                                if let Some(tx) = &app.attack_cmd_tx {
+                                    let _ = tx.send(AttackCommand::UpdateTargets(targets));
+                                }
+                            }
+                        }
+                    }
                 }
                 ScannerEvent::ClientUpdated { ap_bssid, client } => {
                     let mut disconnect_detected = false;
