@@ -412,10 +412,16 @@ impl App {
             (0..self.ap_list.len()).collect()
         } else {
             let q = self.ap_filter.to_lowercase();
+            // BSSID is stored with colons (aa:bb:cc:dd:ee:ff). Strip colons from both the
+            // query and the address so a raw-hex query like "aabbcc" matches a substring
+            // anywhere in the address, not just where it happens to align with octets.
+            let q_hex = q.replace(':', "");
             self.ap_list.iter().enumerate()
                 .filter(|(_, ap)| {
+                    let bssid = ap.bssid.to_lowercase();
                     ap.ssid.to_lowercase().contains(&q)
-                        || ap.bssid.to_lowercase().contains(&q)
+                        || bssid.contains(&q)
+                        || (!q_hex.is_empty() && bssid.replace(':', "").contains(&q_hex))
                 })
                 .map(|(i, _)| i)
                 .collect()
@@ -556,5 +562,58 @@ impl App {
                 target.client_filter.clear();
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn ap(bssid: &str, ssid: &str) -> AccessPoint {
+        AccessPoint {
+            bssid: bssid.to_string(),
+            ssid: ssid.to_string(),
+            band: Band::TwoGHz,
+            channel: 6,
+            signal_dbm: -50,
+            signal_percent: 70,
+            packets: 1,
+            last_seen: Instant::now(),
+            encryption: "WPA2".to_string(),
+            clients: Vec::new(),
+            traffic_rate: 0.0,
+        }
+    }
+
+    fn app_with(aps: Vec<AccessPoint>, filter: &str) -> App {
+        let (mut app, _tx) = App::new();
+        app.ap_list = aps;
+        app.ap_filter = filter.to_string();
+        app
+    }
+
+    #[test]
+    fn filter_matches_ssid_substring_anywhere() {
+        let app = app_with(vec![ap("aa:bb:cc:dd:ee:ff", "MyHomeNetwork")], "home");
+        assert_eq!(app.visible_ap_indices(), vec![0]);
+    }
+
+    #[test]
+    fn filter_matches_bssid_substring_with_colons() {
+        let app = app_with(vec![ap("aa:bb:cc:dd:ee:ff", "Net")], "cc:dd");
+        assert_eq!(app.visible_ap_indices(), vec![0]);
+    }
+
+    #[test]
+    fn filter_matches_bssid_raw_hex_across_colon_boundary() {
+        // "bbccdd" spans octet boundaries — must match despite stored colons.
+        let app = app_with(vec![ap("aa:bb:cc:dd:ee:ff", "Net")], "bbccdd");
+        assert_eq!(app.visible_ap_indices(), vec![0]);
+    }
+
+    #[test]
+    fn filter_excludes_non_matching() {
+        let app = app_with(vec![ap("aa:bb:cc:dd:ee:ff", "Alpha")], "zzz");
+        assert!(app.visible_ap_indices().is_empty());
     }
 }
