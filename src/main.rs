@@ -221,7 +221,18 @@ where
                 app::stop_attack(app);
             }
             let ifaces = interface::discover_interfaces().unwrap_or_default();
-            if let Ok(Some((listen, attack, txpower))) = setup::run_setup_overlay(terminal, ifaces) {
+            // Pre-fill the overlay from the live config so reopening retains the
+            // current roles + TX power instead of resetting to "auto".
+            let listen_base = app.current_interface.as_ref().map(|i| i.name.clone());
+            let attack_base = app.attack_physical.clone().or_else(|| listen_base.clone());
+            let seed = setup::SetupSeed {
+                listen_name: listen_base,
+                attack_name: attack_base,
+                txpower_dbm: app.txpower_dbm,
+            };
+            if let Ok(Some((listen, attack, txpower))) =
+                setup::run_setup_overlay(terminal, ifaces, Some(seed))
+            {
                 reconfigure_adapters(app, listen, attack, txpower);
             }
         }
@@ -284,6 +295,33 @@ where
 }
 
 fn reconfigure_adapters(app: &mut App, listen: String, attack: String, txpower: Option<i32>) {
+    // Fast path: roles unchanged → only TX power may have changed. Apply it
+    // directly instead of tearing down/rebuilding monitor mode and restarting
+    // the scanner (which would needlessly interrupt the live capture).
+    let cur_listen = app.current_interface.as_ref().map(|i| i.name.clone());
+    let cur_attack = app.attack_physical.clone().or_else(|| cur_listen.clone());
+    let roles_unchanged =
+        cur_listen.as_deref() == Some(listen.as_str()) && cur_attack.as_deref() == Some(attack.as_str());
+    if roles_unchanged {
+        if let Some(atk_mon) = app.attack_interface.clone() {
+            match txpower {
+                Some(dbm) => match interface::set_txpower(&atk_mon, Some(dbm)) {
+                    Ok(()) => {
+                        app.txpower_dbm = Some(dbm);
+                        app.add_log(format!("TX power set to {}dBm", dbm));
+                    }
+                    Err(e) => app.add_log(format!("TX power error: {}", e)),
+                },
+                None => {
+                    let _ = interface::set_txpower(&atk_mon, None);
+                    app.txpower_dbm = interface::get_txpower(&atk_mon);
+                    app.add_log("TX power set to auto".to_string());
+                }
+            }
+        }
+        return;
+    }
+
     let listen_changed = app.listen_interface.as_deref() != Some(&listen);
 
     // Disable old attack adapter if distinct from listen

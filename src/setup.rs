@@ -11,6 +11,14 @@ use ratatui::{
 
 use crate::types::WirelessInterface;
 
+/// Current live configuration, used to pre-fill the overlay on a mid-session
+/// reopen so role assignments and TX power are retained instead of resetting.
+pub struct SetupSeed {
+    pub listen_name: Option<String>,
+    pub attack_name: Option<String>,
+    pub txpower_dbm: Option<i32>,
+}
+
 pub struct SetupState {
     pub interfaces: Vec<WirelessInterface>,
     pub listen_idx: Option<usize>,
@@ -30,8 +38,42 @@ impl SetupState {
         }
     }
 
+    /// Build state pre-filled from the current live configuration. Role names
+    /// are matched to interface indices by name (best-effort — an interface
+    /// that has since disappeared simply leaves that role unselected).
+    pub fn seeded(interfaces: Vec<WirelessInterface>, seed: &SetupSeed) -> Self {
+        let listen_idx = seed
+            .listen_name
+            .as_ref()
+            .and_then(|n| interfaces.iter().position(|i| &i.name == n));
+        let attack_idx = seed
+            .attack_name
+            .as_ref()
+            .and_then(|n| interfaces.iter().position(|i| &i.name == n));
+        Self {
+            interfaces,
+            listen_idx,
+            attack_idx,
+            cursor: 0,
+            txpower_dbm: seed.txpower_dbm,
+        }
+    }
+
     fn can_confirm(&self) -> bool {
         self.listen_idx.is_some() && self.attack_idx.is_some()
+    }
+
+    /// The (listen, attack, txpower) result, if both roles are assigned.
+    fn confirm_triple(&self) -> Option<(String, String, Option<i32>)> {
+        if self.can_confirm() {
+            Some((
+                self.interfaces[self.listen_idx.unwrap()].name.clone(),
+                self.interfaces[self.attack_idx.unwrap()].name.clone(),
+                self.txpower_dbm,
+            ))
+        } else {
+            None
+        }
     }
 }
 
@@ -47,16 +89,24 @@ where
     if interfaces.len() == 1 {
         return Ok((interfaces[0].name.clone(), interfaces[0].name.clone(), None));
     }
-    match run_setup_overlay(terminal, interfaces)? {
+    match run_setup_overlay(terminal, interfaces, None)? {
         Some(triple) => Ok(triple),
         None => std::process::exit(0),
     }
 }
 
-/// Mid-session: run setup overlay, return None if cancelled (Esc).
+/// Run the setup overlay.
+///
+/// `seed` distinguishes the two call contexts:
+/// - `None` (startup): fresh state; `Esc`/`q` quit (caller exits the process).
+/// - `Some(..)` (mid-session reopen): state is pre-filled from the live config,
+///   and `Esc` *applies* the current selection (commit-on-close) rather than
+///   discarding it, so tweaking TX power and pressing Esc keeps the change.
+///   `q` still cancels.
 pub fn run_setup_overlay<B: Backend>(
     terminal: &mut Terminal<B>,
     interfaces: Vec<WirelessInterface>,
+    seed: Option<SetupSeed>,
 ) -> Result<Option<(String, String, Option<i32>)>>
 where
     B::Error: Send + Sync + 'static,
@@ -65,10 +115,14 @@ where
         return Ok(None);
     }
 
-    let mut state = SetupState::new(interfaces);
+    let commit_on_esc = seed.is_some();
+    let mut state = match seed {
+        Some(s) => SetupState::seeded(interfaces, &s),
+        None => SetupState::new(interfaces),
+    };
 
     loop {
-        terminal.draw(|f| render_setup(f, &state))?;
+        terminal.draw(|f| render_setup(f, &state, commit_on_esc))?;
 
         if event::poll(std::time::Duration::from_millis(100))? {
             if let Event::Key(key) = event::read()? {
@@ -109,15 +163,19 @@ where
                         }
                     }
                     KeyCode::Enter => {
-                        if state.can_confirm() {
-                            let listen =
-                                state.interfaces[state.listen_idx.unwrap()].name.clone();
-                            let attack =
-                                state.interfaces[state.attack_idx.unwrap()].name.clone();
-                            return Ok(Some((listen, attack, state.txpower_dbm)));
+                        if let Some(triple) = state.confirm_triple() {
+                            return Ok(Some(triple));
                         }
                     }
-                    KeyCode::Char('q') | KeyCode::Esc => return Ok(None),
+                    KeyCode::Esc => {
+                        if commit_on_esc {
+                            if let Some(triple) = state.confirm_triple() {
+                                return Ok(Some(triple));
+                            }
+                        }
+                        return Ok(None);
+                    }
+                    KeyCode::Char('q') => return Ok(None),
                     _ => {}
                 }
             }
@@ -125,7 +183,7 @@ where
     }
 }
 
-fn render_setup(frame: &mut Frame, state: &SetupState) {
+fn render_setup(frame: &mut Frame, state: &SetupState, commit_on_esc: bool) {
     let area = frame.area();
 
     let n = state.interfaces.len() as u16;
@@ -218,10 +276,11 @@ fn render_setup(frame: &mut Frame, state: &SetupState) {
     );
 
     let can_confirm = state.can_confirm();
-    let hint = if can_confirm {
-        "↑↓ Move  L=Listen  A=Attack  +/-=TXpwr  Enter=Confirm  q=Quit"
-    } else {
-        "↑↓ Move  L=Listen  A=Attack  +/-=TXpwr  (assign both roles to confirm)"
+    let hint = match (can_confirm, commit_on_esc) {
+        (true, true) => "↑↓ Move  L=Listen  A=Attack  +/-=TXpwr  Enter/Esc=Apply  q=Cancel",
+        (true, false) => "↑↓ Move  L=Listen  A=Attack  +/-=TXpwr  Enter=Confirm  q=Quit",
+        (false, true) => "↑↓ Move  L=Listen  A=Attack  +/-=TXpwr  (assign both roles)  q=Cancel",
+        (false, false) => "↑↓ Move  L=Listen  A=Attack  +/-=TXpwr  (assign both roles to confirm)",
     };
     let hint_style = if can_confirm {
         Style::default().fg(Color::Green)
@@ -241,4 +300,48 @@ fn centered_rect(width: u16, height: u16, area: Rect) -> Rect {
     let x = area.x + area.width.saturating_sub(width) / 2;
     let y = area.y + area.height.saturating_sub(height) / 2;
     Rect::new(x, y, width.min(area.width), height.min(area.height))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn iface(name: &str) -> WirelessInterface {
+        WirelessInterface {
+            name: name.to_string(),
+            phy: "phy0".to_string(),
+            monitor_name: None,
+            is_monitor: false,
+        }
+    }
+
+    #[test]
+    fn seeded_matches_names_and_preserves_txpower() {
+        let ifaces = vec![iface("wlan0"), iface("wlan1")];
+        let seed = SetupSeed {
+            listen_name: Some("wlan0".to_string()),
+            attack_name: Some("wlan1".to_string()),
+            txpower_dbm: Some(20),
+        };
+        let st = SetupState::seeded(ifaces, &seed);
+        assert_eq!(st.listen_idx, Some(0));
+        assert_eq!(st.attack_idx, Some(1));
+        assert_eq!(st.txpower_dbm, Some(20));
+        assert_eq!(st.confirm_triple(), Some(("wlan0".to_string(), "wlan1".to_string(), Some(20))));
+    }
+
+    #[test]
+    fn seeded_unmatched_name_leaves_role_unselected() {
+        let ifaces = vec![iface("wlan0")];
+        let seed = SetupSeed {
+            listen_name: Some("ghost0".to_string()),
+            attack_name: None,
+            txpower_dbm: None,
+        };
+        let st = SetupState::seeded(ifaces, &seed);
+        assert_eq!(st.listen_idx, None);
+        assert_eq!(st.attack_idx, None);
+        assert!(!st.can_confirm());
+        assert_eq!(st.confirm_triple(), None);
+    }
 }
