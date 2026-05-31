@@ -8,6 +8,27 @@ use crate::types::{Band, WirelessInterface};
 #[cfg(target_os = "linux")]
 use crate::types::channel_to_freq_mhz;
 
+/// Regulatory country code with the most permissive TX-power / DFS rules.
+/// Bolivia (BO) allows up to ~30 dBm on 2.4 GHz and high 5 GHz power with
+/// minimal DFS — without it `iw set txpower fixed` is clamped to the local cap.
+pub const UNRESTRICTED_REG: &str = "BO";
+
+/// Parse the active country code from `iw reg get` output (the `country XX:`
+/// line). Pure + cross-platform so it can be unit-tested. Returns the 2-char
+/// code uppercased, or None if no country line is present.
+pub fn parse_reg_country(stdout: &str) -> Option<String> {
+    for line in stdout.lines() {
+        let t = line.trim();
+        if let Some(rest) = t.strip_prefix("country ") {
+            let cc = rest.split(':').next().unwrap_or("").trim();
+            if cc.len() == 2 && cc.chars().all(|c| c.is_ascii_alphanumeric()) {
+                return Some(cc.to_uppercase());
+            }
+        }
+    }
+    None
+}
+
 // ── Linux implementations ────────────────────────────────────────────────────
 
 /// Discover all wireless interfaces on the system
@@ -369,6 +390,31 @@ pub fn set_txpower(iface: &str, dbm: Option<i32>) -> Result<()> {
     Ok(())
 }
 
+/// Read the current regulatory country code via `iw reg get` (None if unknown).
+#[cfg(target_os = "linux")]
+pub fn get_reg_domain() -> Option<String> {
+    let output = Command::new("iw").args(["reg", "get"]).output().ok()?;
+    parse_reg_country(&String::from_utf8_lossy(&output.stdout))
+}
+
+/// Set the regulatory country (system-wide). Best-effort: cards with a
+/// self-managed / EEPROM-locked regdomain will ignore this.
+#[cfg(target_os = "linux")]
+pub fn set_reg_domain(cc: &str) -> Result<()> {
+    let out = Command::new("iw")
+        .args(["reg", "set", cc])
+        .output()
+        .context(format!("iw reg set {} failed", cc))?;
+    if !out.status.success() {
+        anyhow::bail!(
+            "iw reg set {} failed: {}",
+            cc,
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
+    }
+    Ok(())
+}
+
 // ── Stub implementations (non-Linux / macOS dev) ─────────────────────────────
 
 #[cfg(not(target_os = "linux"))]
@@ -428,4 +474,36 @@ pub fn get_txpower(_iface: &str) -> Option<i32> {
 #[cfg(not(target_os = "linux"))]
 pub fn set_txpower(_iface: &str, _dbm: Option<i32>) -> Result<()> {
     Ok(())
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn get_reg_domain() -> Option<String> {
+    None
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn set_reg_domain(_cc: &str) -> Result<()> {
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_reg_country_reads_country_line() {
+        let out = "global\ncountry US: DFS-FCC\n\t(2402 - 2472 @ 40), (N/A, 30)\n";
+        assert_eq!(parse_reg_country(out), Some("US".to_string()));
+    }
+
+    #[test]
+    fn parse_reg_country_handles_world_and_lowercase() {
+        assert_eq!(parse_reg_country("country 00: DFS-UNSET\n"), Some("00".to_string()));
+        assert_eq!(parse_reg_country("country bo: DFS-UNSET\n"), Some("BO".to_string()));
+    }
+
+    #[test]
+    fn parse_reg_country_none_when_absent() {
+        assert_eq!(parse_reg_country("phy#0\n\tno country here\n"), None);
+    }
 }

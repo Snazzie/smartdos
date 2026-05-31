@@ -310,6 +310,9 @@ pub struct App {
     pub list_picker_idx: usize,
     pub target_sub_section: TargetSubSection,
     pub txpower_dbm: Option<i32>,
+    /// Country code the system regdomain had at startup; restored on exit
+    /// after we switch to the unrestricted domain for max TX power.
+    pub original_reg_domain: Option<String>,
     pub cpu_usage: f32,
     pub sys: System,
     pub channel_focused: bool, // true while locked to an AP's channel for client discovery
@@ -396,6 +399,7 @@ impl App {
             list_picker_idx: 0,
             target_sub_section: TargetSubSection::Aps,
             txpower_dbm: None,
+            original_reg_domain: None,
             cpu_usage: 0.0,
             sys: System::new_all(),
             channel_focused: false,

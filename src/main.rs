@@ -98,6 +98,27 @@ fn main() -> Result<()> {
         app.attack_physical = Some(attack_name.clone());
     }
 
+    // Switch to an unrestricted regulatory domain before applying TX power so
+    // the requested level isn't clamped by the local cap. System-wide and
+    // best-effort (self-managed cards ignore it); restored on exit.
+    if !demo {
+        app.original_reg_domain = interface::get_reg_domain();
+        match interface::set_reg_domain(interface::UNRESTRICTED_REG) {
+            Ok(()) => {
+                std::thread::sleep(std::time::Duration::from_millis(300));
+                let was = match &app.original_reg_domain {
+                    Some(cc) => format!(", was {}", cc),
+                    None => String::new(),
+                };
+                app.add_log(format!(
+                    "Regulatory domain → {} (unrestricted){}",
+                    interface::UNRESTRICTED_REG, was
+                ));
+            }
+            Err(e) => app.add_log(format!("Regdomain set failed (TX power may be capped): {}", e)),
+        }
+    }
+
     if let Some(dbm) = txpower {
         match interface::set_txpower(&attack_mon, Some(dbm)) {
             Ok(()) => app.txpower_dbm = Some(dbm),
@@ -903,6 +924,11 @@ fn shutdown<B: Backend>(_terminal: &mut Terminal<B>, app: &App) {
             let atk_phys = app.attack_physical.as_deref().unwrap_or(atk_mon.as_str());
             let _ = interface::disable_monitor_mode(atk_phys, atk_mon);
         }
+    }
+
+    // Restore the regulatory domain we changed for max TX power
+    if let Some(cc) = &app.original_reg_domain {
+        let _ = interface::set_reg_domain(cc);
     }
 
     let _ = persist::save_ap_list(&app.ap_list);
