@@ -1,5 +1,7 @@
 # smartdos v0.1
 
+![smartdos TUI](assets/screenshot.png)
+
 > **🚧 Work in Progress** — This project is under active development and has not been rigorously tested. Expect bugs, incomplete features, and breaking changes. Use at your own risk.
 
 **Wireless AP scanner + deauth attack orchestrator with terminal UI**
