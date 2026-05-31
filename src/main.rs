@@ -897,6 +897,13 @@ fn handle_key_event(app: &mut App, key: KeyEvent) {
         KeyCode::Esc => {
             if app.tab_selection == TabSelection::ClientList {
                 app.tab_selection = TabSelection::ApList;
+                if app.channel_focused {
+                    app.channel_focused = false;
+                    if let Some(ref tx) = app.scanner_cmd_tx {
+                        let _ = tx.send(types::ScannerCommand::FreeHop);
+                    }
+                    app.add_log("Focus mode off — resuming channel scan".to_string());
+                }
             } else {
                 if app.attack_running {
                     app::stop_attack(app);
