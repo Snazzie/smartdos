@@ -30,13 +30,13 @@
 
 | Feature                  | Description                                                                          |
 | ------------------------ | ------------------------------------------------------------------------------------ |
-| **AP Scanning**          | Live 802.11 beacon/probe-response capture via pcap on 2.4 GHz and 5 GHz channels    |
+| **AP Scanning**          | Live 802.11 beacon/probe-response capture via pcap on 2.4 GHz, 5 GHz, and 6 GHz channels |
 | **Client Discovery**     | Detects associated clients per AP from data/management frames                        |
 | **Signal Display**       | dBm + percentage for each AP, color-coded (green/yellow/red)                         |
 | **Channel Detection**    | Reads channel from DS Parameter Set IE tag                                           |
 | **Encryption Detection** | Identifies OPEN / WPA / WPA2                                                         |
 | **Vendor Lookup**        | OUI-based NIC vendor identification for APs and clients                              |
-| **Channel Hopping**      | Scanner hops across 2.4 GHz and 5 GHz channels every 250 ms                         |
+| **Channel Hopping**      | Scanner hops across 2.4 GHz, 5 GHz, and 6 GHz channels every 250 ms                 |
 
 ### Attack Capabilities
 
@@ -57,7 +57,8 @@
 | ------------------------ | ------------------------------------------------------------------------------------ |
 | **Client Follow**        | Follow a specific client MAC — auto-updates target AP when client roams              |
 | **Pursuit Mode**         | Single-adapter pursuit: triggers channel sweep when followed client goes silent      |
-| **Client Naming**        | Assign friendly names to client MACs; persisted across sessions                     |
+| **Client Naming**        | Assign friendly names to client MACs; persisted across sessions                      |
+| **AP Harvest Mode**      | Mark APs for passive client harvesting (`H`); auto-follows new clients seen on harvested APs; harvested APs highlighted with `◆` marker |
 
 ### Handshake Capture
 
@@ -86,7 +87,7 @@
 | **Event Log**            | Scrollable log panel showing actions and errors                                      |
 | **Full-screen Events**   | `Tab` expands the event log to the whole screen (scrollable); `Tab`/`Esc` to return  |
 | **Panel Navigation**     | `←/→` and `c` switch between AP list / Target list / Client list panels               |
-| **Settings Overlay**     | In-app overlay to tune burst size and send interval without restarting               |
+| **Settings Overlay**     | In-app overlay to tune burst size, send interval, and 2.4/5/6 GHz band toggles without restarting |
 | **Clear Scan Results**   | `R` clears AP list and resets discovery state mid-session                            |
 
 ---
@@ -156,6 +157,7 @@ sudo ./target/release/smartdos wlan0mon
 | `Space`         | Enable/disable selected target                               |
 | `c`             | View clients of selected AP                                  |
 | `n`             | Name selected client                                         |
+| `h`             | Toggle harvest mode on selected AP (AP list panel only)      |
 | `A`             | Cycle attack type (Deauth → AuthDos → BeaconFlood)           |
 | `M`             | Toggle attack mode (Round-Robin ↔ Parallel)                  |
 | `P`             | Toggle pursuit mode                                          |
@@ -188,7 +190,7 @@ sudo ./target/release/smartdos wlan0mon
 │  Attack started: 3 targets        │  Targets: 3                     │
 │  Deauth sent to MyNet: 527        │  Deauth Sent: 1427              │
 ├──────────────────────────────────────────────────────────────────────┤
-│  ↑↓ nav  TAB switch  t target  d untarget  M mode  S start/stop Q  │
+│  ↑↓ nav  ←→ panels  TAB events  t target  S start/stop  Q quit     │
 └──────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -199,7 +201,7 @@ sudo ./target/release/smartdos wlan0mon
 ### Scanning
 
 1. Opens a pcap capture on the monitor-mode interface
-2. Filters for 802.11 management frames (beacon + probe response)
+2. Filters for 802.11 management frames (beacon + probe response) and data frames (for client discovery and EAPOL detection)
 3. Parses the radiotap header for signal strength (dBm)
 4. Parses the 802.11 frame header for BSSID, SSID, and tagged parameters (channel, encryption)
 5. Sends AP updates to the main thread via an mpsc channel
