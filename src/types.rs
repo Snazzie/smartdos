@@ -295,6 +295,7 @@ pub struct App {
     pub current_band: Band,
     pub deauth_scope: DeauthScope,
     pub followed_clients: Vec<(String, Option<String>)>,
+    pub harvested_aps: Vec<String>,
     pub log_file: Option<File>,
     pub log_path: Option<std::path::PathBuf>,
     pub log_bytes: u64,
@@ -380,6 +381,7 @@ impl App {
             current_band: Band::TwoGHz,
             deauth_scope: DeauthScope::Broadcast,
             followed_clients: Vec::new(),
+            harvested_aps: Vec::new(),
             log_file: None,
             log_path: None,
             log_bytes: 0,
@@ -575,6 +577,36 @@ impl App {
             }
         }
     }
+
+    pub fn is_ap_harvested(&self, bssid: &str) -> bool {
+        self.harvested_aps.iter().any(|b| b == bssid)
+    }
+
+    /// Toggle harvest mode for an AP. Returns true if now harvesting, false if removed.
+    /// On enable: immediately backfills all currently known clients of that AP.
+    pub fn toggle_ap_harvest(&mut self, bssid: &str) -> bool {
+        if let Some(pos) = self.harvested_aps.iter().position(|b| b == bssid) {
+            self.harvested_aps.remove(pos);
+            return false;
+        }
+        self.harvested_aps.push(bssid.to_string());
+
+        let client_macs: Vec<String> = self.ap_list
+            .iter()
+            .find(|ap| ap.bssid == bssid)
+            .map(|ap| ap.clients.iter().map(|c| c.mac.clone()).collect())
+            .unwrap_or_default();
+
+        for mac in &client_macs {
+            if !self.followed_clients.iter().any(|(m, _)| m == mac) {
+                self.followed_clients.push((mac.clone(), Some(bssid.to_string())));
+            }
+        }
+        if !client_macs.is_empty() {
+            self.rebuild_follow_targets();
+        }
+        true
+    }
 }
 
 #[cfg(test)]
@@ -627,5 +659,58 @@ mod tests {
     fn filter_excludes_non_matching() {
         let app = app_with(vec![ap("aa:bb:cc:dd:ee:ff", "Alpha")], "zzz");
         assert!(app.visible_ap_indices().is_empty());
+    }
+
+    fn client(mac: &str) -> Client {
+        Client {
+            mac: mac.to_string(),
+            signal_dbm: -65,
+            packets: 1,
+            last_seen: Instant::now(),
+            associated: true,
+            friendly_name: None,
+        }
+    }
+
+    fn app_with_ap_and_clients() -> App {
+        let mut base = ap("AA:BB:CC:DD:EE:FF", "TestNet");
+        base.clients = vec![client("11:22:33:44:55:66"), client("AA:BB:CC:DD:EE:11")];
+        app_with(vec![base], "")
+    }
+
+    #[test]
+    fn harvest_on_backfills_existing_clients() {
+        let mut app = app_with_ap_and_clients();
+        let result = app.toggle_ap_harvest("AA:BB:CC:DD:EE:FF");
+        assert!(result);
+        assert_eq!(app.followed_clients.len(), 2);
+        assert!(app.followed_clients.iter().any(|(m, _)| m == "11:22:33:44:55:66"));
+        assert!(app.followed_clients.iter().any(|(m, _)| m == "AA:BB:CC:DD:EE:11"));
+    }
+
+    #[test]
+    fn harvest_off_removes_from_harvested_aps() {
+        let mut app = app_with_ap_and_clients();
+        app.toggle_ap_harvest("AA:BB:CC:DD:EE:FF");
+        let result = app.toggle_ap_harvest("AA:BB:CC:DD:EE:FF");
+        assert!(!result);
+        assert!(!app.is_ap_harvested("AA:BB:CC:DD:EE:FF"));
+    }
+
+    #[test]
+    fn harvest_no_duplicate_in_followed_clients() {
+        let mut app = app_with_ap_and_clients();
+        app.followed_clients.push(("11:22:33:44:55:66".to_string(), None));
+        app.toggle_ap_harvest("AA:BB:CC:DD:EE:FF");
+        let count = app.followed_clients.iter().filter(|(m, _)| m == "11:22:33:44:55:66").count();
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn is_ap_harvested_returns_correct_state() {
+        let mut app = app_with_ap_and_clients();
+        assert!(!app.is_ap_harvested("AA:BB:CC:DD:EE:FF"));
+        app.toggle_ap_harvest("AA:BB:CC:DD:EE:FF");
+        assert!(app.is_ap_harvested("AA:BB:CC:DD:EE:FF"));
     }
 }
