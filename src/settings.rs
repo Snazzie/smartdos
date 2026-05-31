@@ -61,6 +61,14 @@ where
                             state.cursor += 1;
                         }
                     }
+                    KeyCode::Left | KeyCode::Right if state.cursor >= 2 => {
+                        match state.cursor {
+                            2 => state.band_2ghz = !state.band_2ghz,
+                            3 => state.band_5ghz = !state.band_5ghz,
+                            4 => state.band_6ghz = !state.band_6ghz,
+                            _ => {}
+                        }
+                    }
                     KeyCode::Left => match state.cursor {
                         0 => {
                             state.burst_size = state.burst_size.saturating_sub(200).max(200);
@@ -83,15 +91,7 @@ where
                         }
                         _ => {}
                     },
-                    KeyCode::Char(' ') | KeyCode::Enter if state.cursor >= 2 => {
-                        match state.cursor {
-                            2 => state.band_2ghz = !state.band_2ghz,
-                            3 => state.band_5ghz = !state.band_5ghz,
-                            4 => state.band_6ghz = !state.band_6ghz,
-                            _ => {}
-                        }
-                    }
-                    KeyCode::Enter if state.cursor < 2 => {
+                    KeyCode::Enter => {
                         return Ok(Some(SettingsResult {
                             burst_size: state.burst_size,
                             send_interval_ms: state.send_interval_ms,
@@ -175,7 +175,7 @@ fn render_settings(frame: &mut Frame, state: &SettingsState) {
         rows.push(Row::new(vec![
             Cell::from(Span::styled(format!("{}{}", if is_sel { "▶ " } else { "  " }, label), label_style)),
             Cell::from(Span::styled(format!("{:>5}", ""), Style::default())),
-            Cell::from(Span::styled("Space/Enter to toggle", Style::default().fg(Color::DarkGray))),
+            Cell::from(Span::styled("◄► to toggle", Style::default().fg(Color::DarkGray))),
             Cell::from(Span::styled(toggle_text, Style::default().fg(toggle_color).add_modifier(Modifier::BOLD))),
         ]));
     }
@@ -197,8 +197,10 @@ fn render_settings(frame: &mut Frame, state: &SettingsState) {
         Span::raw(" field  "),
         Span::styled("◄►", Style::default().fg(Color::Cyan)),
         Span::raw(" adjust  "),
-        Span::styled("Space", Style::default().fg(Color::Cyan)),
+        Span::styled("◄►", Style::default().fg(Color::Cyan)),
         Span::raw(" toggle  "),
+        Span::styled("Enter", Style::default().fg(Color::Green)),
+        Span::raw(" save  "),
         Span::styled("Esc", Style::default().fg(Color::Red)),
         Span::raw(" cancel"),
     ]))
