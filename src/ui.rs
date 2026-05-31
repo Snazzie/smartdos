@@ -317,6 +317,12 @@ fn render_targets_panel(frame: &mut Frame, app: &App, area: Rect) {
     let client_targets: Vec<_> = app.targets.iter().enumerate()
         .filter(|(_, t)| !t.client_filter.is_empty())
         .collect();
+    // One row per targeted client MAC — never collapse multiple MACs on the same
+    // AP into a single "N macs" row. Each entry keeps the owning target's global
+    // index so selection and counters still resolve to the per-AP target.
+    let client_entries: Vec<_> = client_targets.iter()
+        .flat_map(|&(gi, t)| t.client_filter.iter().map(move |m| (gi, t, m)))
+        .collect();
     let ap_targets: Vec<_> = app.targets.iter().enumerate().collect();
 
     let outer_block = Block::default()
@@ -343,7 +349,7 @@ fn render_targets_panel(frame: &mut Frame, app: &App, area: Rect) {
 
     frame.render_widget(outer_block, area);
 
-    let client_rows_needed = (client_targets.len() + 2).max(3) as u16; // header + rows + min
+    let client_rows_needed = (client_entries.len() + 2).max(3) as u16; // header + rows + min
     let ap_rows_needed = (ap_targets.len() + 2).max(3) as u16;
     let split = Layout::default()
         .direction(Direction::Vertical)
@@ -356,7 +362,7 @@ fn render_targets_panel(frame: &mut Frame, app: &App, area: Rect) {
     // ── Client targets (top) ──────────────────────────────────────────────
     let client_focused = is_active && app.target_sub_section == TargetSubSection::Clients;
     let client_block = Block::default()
-        .title(format!(" Clients ({}) ", client_targets.len()))
+        .title(format!(" Clients ({}) ", client_entries.len()))
         .borders(Borders::ALL)
         .border_type(BorderType::Plain)
         .border_style(Style::default().fg(if client_focused { Color::Yellow } else { Color::Cyan }));
@@ -376,9 +382,9 @@ fn render_targets_panel(frame: &mut Frame, app: &App, area: Rect) {
     .height(1)
     .style(Style::default().bg(Color::Rgb(0, 60, 80)));
 
-    let client_rows: Vec<Row> = client_targets.iter()
-        .map(|(global_idx, target)| {
-            let is_selected = is_active && app.selected_target_idx == Some(*global_idx);
+    let client_rows: Vec<Row> = client_entries.iter()
+        .map(|&(global_idx, target, mac)| {
+            let is_selected = is_active && app.selected_target_idx == Some(global_idx);
             let status = if target.active { "ACTIVE" } else { "OFF" };
             let row_style = if is_selected {
                 Style::default().bg(Color::Rgb(30, 50, 70)).add_modifier(Modifier::BOLD)
@@ -393,13 +399,8 @@ fn render_targets_panel(frame: &mut Frame, app: &App, area: Rect) {
             } else {
                 Cell::from(Span::styled("    -", Style::default().fg(Color::DarkGray)))
             };
-            let client_label = if target.client_filter.len() == 1 {
-                truncate_str(&target.client_filter[0], 17)
-            } else {
-                format!("{} macs", target.client_filter.len())
-            };
             Row::new(vec![
-                Cell::from(Span::styled(client_label, Style::default().fg(Color::Cyan))),
+                Cell::from(Span::styled(truncate_str(mac, 17), Style::default().fg(Color::Cyan))),
                 Cell::from(truncate_str(&target.bssid, 17)),
                 Cell::from(Span::styled(
                     status,
@@ -419,7 +420,7 @@ fn render_targets_panel(frame: &mut Frame, app: &App, area: Rect) {
         frame.render_widget(hint, client_inner);
     } else {
         let sel_pos = app.selected_target_idx
-            .and_then(|g| client_targets.iter().position(|(gi, _)| *gi == g));
+            .and_then(|g| client_entries.iter().position(|&(gi, _, _)| gi == g));
         render_scrollable_table(
             frame, split[0], client_inner, client_header, &client_col_widths, client_rows, sel_pos,
         );
