@@ -202,6 +202,7 @@ fn render_ap_list(frame: &mut Frame, app: &App, area: Rect) {
                 global_idx == app.selected_ap_idx && app.tab_selection == TabSelection::ApList;
             let is_followed = app.followed_clients.iter()
                 .any(|(_, maybe_ap)| maybe_ap.as_deref() == Some(&ap.bssid));
+            let is_harvested = app.is_ap_harvested(&ap.bssid);
 
             let signal_color = if ap.signal_dbm >= -50 {
                 Color::Green
@@ -214,6 +215,10 @@ fn render_ap_list(frame: &mut Frame, app: &App, area: Rect) {
             let row_style = if is_selected {
                 Style::default()
                     .bg(Color::Rgb(40, 40, 80))
+                    .add_modifier(Modifier::BOLD)
+            } else if is_harvested {
+                Style::default()
+                    .fg(Color::Yellow)
                     .add_modifier(Modifier::BOLD)
             } else if is_followed {
                 Style::default()
@@ -228,7 +233,7 @@ fn render_ap_list(frame: &mut Frame, app: &App, area: Rect) {
             let ssid_display = if ap.ssid.is_empty() || ap.ssid == "<Hidden>" {
                 Span::styled("<Hidden>", Style::default().fg(Color::DarkGray))
             } else {
-                let marker = if is_followed { "▶" } else { " " };
+                let marker = if is_harvested { "◆" } else if is_followed { "▶" } else { " " };
                 Span::styled(
                     format!("{}{}", marker, truncate_str(&ap.ssid, 14)),
                     Style::default(),
@@ -981,6 +986,7 @@ fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
         TabSelection::ApList => {
             add(&mut spans, "↑↓", "nav");
             add(&mut spans, "t", "target");
+            add(&mut spans, "h", "harvest");
             add(&mut spans, "c", "clients+focus");
             add(&mut spans, "/", "filter");
             add(&mut spans, "r", "clear scan");
