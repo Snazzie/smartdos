@@ -403,7 +403,10 @@ impl App {
             ap_filter: String::new(),
             band_2ghz_enabled: true,
             band_5ghz_enabled: true,
-            band_6ghz_enabled: true,
+            // 6 GHz off by default: most regdomains/cards reject 6 GHz tuning, so
+            // hopping there just spams `iw set freq ... rejected` and burns the
+            // hop budget on channels that never capture. Opt in via Settings.
+            band_6ghz_enabled: false,
         };
 
         (app, scanner_tx)

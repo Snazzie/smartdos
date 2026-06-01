@@ -115,14 +115,20 @@ pub fn start_scanner(
                             let _ = event_tx.send(ScannerEvent::Error(format!(
                                 "Hop → ch{} ({})", ch, band.label()
                             )));
+                            let _ = event_tx.send(ScannerEvent::ChannelChanged { channel: ch, band });
                         }
                         Err(e) => {
+                            // Regulatory rejection is permanent for this session, so
+                            // drop the channel from the rotation instead of retrying
+                            // (and re-spamming the log) on every cycle. Toggling the
+                            // band in Settings rebuilds scan_channels and restores it.
                             let _ = event_tx.send(ScannerEvent::Error(format!(
-                                "Channel hop failed ch{} ({}): {}", ch, band.label(), e
+                                "Channel ch{} ({}) disabled, removing from scan: {}", ch, band.label(), e
                             )));
+                            scan_channels.remove(channel_idx);
+                            channel_idx = channel_idx.saturating_sub(1);
                         }
                     }
-                    let _ = event_tx.send(ScannerEvent::ChannelChanged { channel: ch, band });
                     last_channel_hop = Instant::now();
                 }
 
