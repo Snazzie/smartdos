@@ -121,9 +121,14 @@ pub fn start_scanner(
                     // specific channels" symptom when a contiguous block (e.g. 5 GHz
                     // UNII-3 under a regdomain that disallows it) keeps failing.
                     // Instead, skip past failures within this tick and only reset
-                    // the hop timer once we've actually landed somewhere (or tried
-                    // every channel). A dead channel costs a fast EINVAL, not 400ms.
-                    for _ in 0..scan_channels.len() {
+                    // the hop timer once we've actually landed somewhere. A dead
+                    // channel costs a fast EINVAL, not 400ms. Cap attempts per tick
+                    // so a long failing run can't monopolise the loop — the scanner
+                    // returns to drain commands (LockChannel/FreeHop/shutdown) and
+                    // simply resumes the sweep from where it left off next tick.
+                    const MAX_HOP_ATTEMPTS: usize = 4;
+                    let attempts = MAX_HOP_ATTEMPTS.min(scan_channels.len());
+                    for _ in 0..attempts {
                         channel_idx = (channel_idx + 1) % scan_channels.len();
                         let (ch, band) = scan_channels[channel_idx];
                         match set_channel(&iface, ch, band) {
@@ -262,29 +267,61 @@ pub fn start_scanner(
 
 /// Tune a monitor interface to `channel` on `band`, reporting failure.
 ///
-/// Uses output() (not fire-and-forget spawn) so a rejected tune surfaces as an
-/// error the caller can log instead of vanishing — e.g. `iw set freq` refused
-/// because the active regulatory domain doesn't permit that channel (the exact
-/// trap that hid 5 GHz UNII-1 being unreachable under a bad regdomain). Only
-/// non-DFS channels are ever passed here (see CHANNELS_5GHZ), so iw returns
-/// promptly and never blocks on DFS/CAC.
+/// Surfaces a rejected tune as an error the caller can log instead of vanishing
+/// — e.g. `iw set freq` refused because the active regulatory domain doesn't
+/// permit that channel (the trap that hid 5 GHz UNII-1 under a bad regdomain).
+///
+/// Spawned with a hard timeout rather than a plain `output()`: a wedged `iw`
+/// (driver in a bad state, channel mid-CAC, etc.) would otherwise block the
+/// scanner thread indefinitely. On timeout we kill the child and report it as a
+/// normal failure so the hop loop just skips the channel and moves on.
 #[cfg(all(not(feature = "demo"), target_os = "linux"))]
 fn set_channel(iface: &str, channel: u8, band: Band) -> Result<()> {
+    const TUNE_TIMEOUT: Duration = Duration::from_millis(700);
     let freq = channel_to_freq_mhz(channel, band);
-    let out = std::process::Command::new("iw")
+    let mut child = std::process::Command::new("iw")
         .args(["dev", iface, "set", "freq", &freq.to_string()])
         .stdin(std::process::Stdio::null())
-        .output()
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
         .context(format!("Failed to run iw for freq {} MHz on {}", freq, iface))?;
-    if !out.status.success() {
-        anyhow::bail!(
-            "iw set freq {} MHz (ch {}) rejected: {}",
-            freq,
-            channel,
-            String::from_utf8_lossy(&out.stderr).trim()
-        );
+
+    let deadline = Instant::now() + TUNE_TIMEOUT;
+    loop {
+        match child.try_wait().context("iw try_wait failed")? {
+            Some(status) => {
+                if status.success() {
+                    return Ok(());
+                }
+                // Child has exited, so reading the piped stderr won't block.
+                let mut stderr = String::new();
+                if let Some(mut e) = child.stderr.take() {
+                    use std::io::Read;
+                    let _ = e.read_to_string(&mut stderr);
+                }
+                anyhow::bail!(
+                    "iw set freq {} MHz (ch {}) rejected: {}",
+                    freq,
+                    channel,
+                    stderr.trim()
+                );
+            }
+            None => {
+                if Instant::now() >= deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    anyhow::bail!(
+                        "iw set freq {} MHz (ch {}) timed out after {}ms",
+                        freq,
+                        channel,
+                        TUNE_TIMEOUT.as_millis()
+                    );
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        }
     }
-    Ok(())
 }
 
 /// Open pcap capture with filter for all management frames
