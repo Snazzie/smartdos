@@ -97,7 +97,12 @@ fn sync_target_to_discovered_ap(app: &mut App, bssid: &str, channel: u8, band: B
 
 /// Process events from the scanner thread
 fn process_scanner_events(app: &mut App) {
-    loop {
+    // Bound work per frame so a busy RF environment can't starve the TUI: the
+    // main loop must return to render/key-handling even if the scanner keeps
+    // flooding events. Anything left in the channel is drained next tick.
+    const MAX_EVENTS_PER_TICK: usize = 256;
+    let mut needs_sort = false;
+    for _ in 0..MAX_EVENTS_PER_TICK {
         match app.scanner_rx.try_recv() {
             Ok(event) => match event {
                 ScannerEvent::ApDiscovered(ap) => {
@@ -111,7 +116,7 @@ fn process_scanner_events(app: &mut App) {
                         existing.last_seen = ap.last_seen;
                     } else {
                         app.ap_list.push(ap);
-                        app.ap_list.sort_by(|a, b| b.signal_dbm.cmp(&a.signal_dbm));
+                        needs_sort = true;
                     }
                     // Correct any loaded target's channel/band as we rediscover its AP.
                     sync_target_to_discovered_ap(app, &bssid, channel, band);
@@ -148,7 +153,7 @@ fn process_scanner_events(app: &mut App) {
                         }
                     }
                     if app.ap_list.len() > 1 {
-                        app.ap_list.sort_by(|a, b| b.signal_dbm.cmp(&a.signal_dbm));
+                        needs_sort = true;
                     }
                     // Keep any matching target's channel/band aligned with the AP's
                     // real channel (corrects stale channels from loaded lists);
@@ -233,6 +238,11 @@ fn process_scanner_events(app: &mut App) {
             }
         }
     }
+    // Sort once per tick instead of on every event — keeps the drain O(n) in
+    // events rather than O(n log n) per event under heavy beacon traffic.
+    if needs_sort && app.ap_list.len() > 1 {
+        app.ap_list.sort_by(|a, b| b.signal_dbm.cmp(&a.signal_dbm));
+    }
 }
 
 /// Check if a seen client is followed; if it roamed, update targets + notify attack thread
@@ -287,8 +297,11 @@ fn process_attack_events(app: &mut App) {
         return;
     }
 
+    // Bound per tick: Parallel mode with a large burst floods DeauthSent events
+    // and would otherwise starve the render/key-handling loop.
+    const MAX_EVENTS_PER_TICK: usize = 256;
     let mut events = Vec::new();
-    loop {
+    for _ in 0..MAX_EVENTS_PER_TICK {
         match app.attack_rx.as_ref().unwrap().try_recv() {
             Ok(event) => events.push(event),
             Err(mpsc::TryRecvError::Empty) => break,
