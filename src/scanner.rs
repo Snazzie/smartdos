@@ -63,6 +63,12 @@ pub fn start_scanner(
             let mut band_5ghz_en = band_5ghz_enabled;
             let mut band_6ghz_en = band_6ghz_enabled;
             let mut scan_channels = scan_channels_for(supports_5ghz, supports_6ghz, band_2ghz_en, band_5ghz_en, band_6ghz_en);
+            // Channels whose last tune attempt failed — used only to log each
+            // failing channel once (until it recovers). We never drop channels
+            // from the rotation: a regdomain-disabled channel just fails cheaply
+            // every pass, and a transiently-busy one self-heals next time around.
+            let mut failed_channels: std::collections::HashSet<(u8, Band)> =
+                std::collections::HashSet::new();
             let mut locked = false;
             let mut sweep_mac: Option<String> = None;
             // Lazily-created handshake/PMKID capture file (opened on first EAPOL).
@@ -108,25 +114,34 @@ pub fn start_scanner(
                     && last_channel_hop.elapsed() >= Duration::from_millis(CHANNEL_HOP_MS)
                     && !scan_channels.is_empty()
                 {
-                    channel_idx = (channel_idx + 1) % scan_channels.len();
-                    let (ch, band) = scan_channels[channel_idx];
-                    match set_channel(&iface, ch, band) {
-                        Ok(()) => {
-                            let _ = event_tx.send(ScannerEvent::Error(format!(
-                                "Hop → ch{} ({})", ch, band.label()
-                            )));
-                            let _ = event_tx.send(ScannerEvent::ChannelChanged { channel: ch, band });
-                        }
-                        Err(e) => {
-                            // Regulatory rejection is permanent for this session, so
-                            // drop the channel from the rotation instead of retrying
-                            // (and re-spamming the log) on every cycle. Toggling the
-                            // band in Settings rebuilds scan_channels and restores it.
-                            let _ = event_tx.send(ScannerEvent::Error(format!(
-                                "Channel ch{} ({}) disabled, removing from scan: {}", ch, band.label(), e
-                            )));
-                            scan_channels.remove(channel_idx);
-                            channel_idx = channel_idx.saturating_sub(1);
+                    // Advance to the next channel that actually tunes. A failed
+                    // set_channel does NOT change the channel, so if we stopped on
+                    // the first failure we'd park on the previous channel and burn
+                    // the whole CHANNEL_HOP_MS window — that's the "stuck on
+                    // specific channels" symptom when a contiguous block (e.g. 5 GHz
+                    // UNII-3 under a regdomain that disallows it) keeps failing.
+                    // Instead, skip past failures within this tick and only reset
+                    // the hop timer once we've actually landed somewhere (or tried
+                    // every channel). A dead channel costs a fast EINVAL, not 400ms.
+                    for _ in 0..scan_channels.len() {
+                        channel_idx = (channel_idx + 1) % scan_channels.len();
+                        let (ch, band) = scan_channels[channel_idx];
+                        match set_channel(&iface, ch, band) {
+                            Ok(()) => {
+                                failed_channels.remove(&(ch, band));
+                                let _ = event_tx.send(ScannerEvent::ChannelChanged { channel: ch, band });
+                                break;
+                            }
+                            Err(e) => {
+                                // Log each failing channel once (until it recovers)
+                                // so a permanently-disabled channel doesn't re-spam
+                                // the log on every pass.
+                                if failed_channels.insert((ch, band)) {
+                                    let _ = event_tx.send(ScannerEvent::Error(format!(
+                                        "Channel ch{} ({}) unavailable, skipping: {}", ch, band.label(), e
+                                    )));
+                                }
+                            }
                         }
                     }
                     last_channel_hop = Instant::now();

@@ -22,7 +22,7 @@ pub const CHANNELS_6GHZ: &[u8] = &[
 pub const CHANNEL_HOP_MS: u64 = 400;
 
 /// Wi-Fi band
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum Band {
     TwoGHz,
     FiveGHz,
