@@ -3,6 +3,8 @@ use anyhow::Result;
 use anyhow::Context;
 #[cfg(target_os = "linux")]
 use std::process::Command;
+#[cfg(target_os = "linux")]
+use std::time::{Duration, Instant};
 
 use crate::types::{Band, WirelessInterface};
 #[cfg(target_os = "linux")]
@@ -180,13 +182,53 @@ fn get_monitor_name(iface: &str) -> Option<String> {
     None
 }
 
+/// Run a command with a hard timeout. A wedged external tool — `airmon-ng` in
+/// particular, which brings interfaces up/down and kills processes — must never
+/// block the caller (and therefore the TUI main thread) indefinitely. On
+/// timeout the child is killed and a `TimedOut` error is returned so the caller
+/// degrades gracefully. (Outputs here are tiny, so reading the pipes only after
+/// exit can't deadlock on a full pipe buffer.)
+#[cfg(target_os = "linux")]
+fn output_timeout(cmd: &mut Command, timeout: Duration) -> std::io::Result<std::process::Output> {
+    use std::io::Read;
+    let mut child = cmd
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()?;
+    let deadline = Instant::now() + timeout;
+    loop {
+        if let Some(status) = child.try_wait()? {
+            let mut stdout = Vec::new();
+            let mut stderr = Vec::new();
+            if let Some(mut o) = child.stdout.take() {
+                let _ = o.read_to_end(&mut stdout);
+            }
+            if let Some(mut e) = child.stderr.take() {
+                let _ = e.read_to_end(&mut stderr);
+            }
+            return Ok(std::process::Output { status, stdout, stderr });
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                format!("command timed out after {}ms", timeout.as_millis()),
+            ));
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
 /// Enable monitor mode on an interface using `airmon-ng`
 #[cfg(target_os = "linux")]
 pub fn enable_monitor_mode(iface: &str) -> Result<String> {
-    let output = Command::new("airmon-ng")
-        .args(["start", iface])
-        .output()
-        .context(format!("Failed to run airmon-ng start {}", iface))?;
+    let output = output_timeout(
+        Command::new("airmon-ng").args(["start", iface]),
+        Duration::from_secs(8),
+    )
+    .context(format!("Failed to run airmon-ng start {}", iface))?;
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -254,16 +296,18 @@ pub fn enable_monitor_mode(iface: &str) -> Result<String> {
 /// Disable monitor mode
 #[cfg(target_os = "linux")]
 pub fn disable_monitor_mode(iface: &str, mon_iface: &str) -> Result<()> {
+    // All time-boxed: this runs on the main thread during reconfigure/shutdown,
+    // and a wedged airmon-ng/iw/ip here would freeze the whole UI.
+    let t = Duration::from_secs(8);
+
     // Try airmon-ng stop first
-    let _ = Command::new("airmon-ng").args(["stop", mon_iface]).output();
+    let _ = output_timeout(Command::new("airmon-ng").args(["stop", mon_iface]), t);
 
     // Also try iw to delete the monitor interface if it's a separate vif
-    let _ = Command::new("iw").args(["dev", mon_iface, "del"]).output();
+    let _ = output_timeout(Command::new("iw").args(["dev", mon_iface, "del"]), t);
 
     // Bring original interface up
-    let _ = Command::new("ip")
-        .args(["link", "set", iface, "up"])
-        .output();
+    let _ = output_timeout(Command::new("ip").args(["link", "set", iface, "up"]), t);
 
     Ok(())
 }
