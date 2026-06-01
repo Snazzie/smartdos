@@ -217,6 +217,22 @@ fn activate_monitor(iface: &str) -> String {
     }
 }
 
+/// Diagnostic: when `SMARTDOS_TRACE` is set, overwrite ~/.smartdos/trace.log
+/// with the name of the main-loop phase we're about to enter. If the UI freezes,
+/// the file's contents name the phase that hung (the loop never reached the next
+/// marker). No-op unless the env var is set, so it costs nothing in normal runs.
+/// Inspect live with `watch -n0.2 cat ~/.smartdos/trace.log` while reproducing.
+fn trace_phase(phase: &str) {
+    if std::env::var_os("SMARTDOS_TRACE").is_none() {
+        return;
+    }
+    if let Some(home) = std::env::var_os("HOME") {
+        let dir = std::path::Path::new(&home).join(".smartdos");
+        let _ = std::fs::create_dir_all(&dir);
+        let _ = std::fs::write(dir.join("trace.log"), phase);
+    }
+}
+
 fn run_tui<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> Result<()>
 where
     B::Error: Send + Sync + 'static,
@@ -224,18 +240,23 @@ where
     let tick_rate = std::time::Duration::from_millis(50);
 
     loop {
+        trace_phase("draw");
         terminal.draw(|f| {
             ui::render(f, app);
         })?;
 
+        trace_phase("update");
         app::update(app);
 
+        trace_phase("poll");
         if event::poll(tick_rate)? {
             if let Event::Key(key) = event::read()? {
+                trace_phase("handle_key");
                 handle_key_event(app, key);
             }
         }
 
+        trace_phase("overlays");
         if app.wants_setup {
             app.wants_setup = false;
             if app.attack_running {
