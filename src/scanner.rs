@@ -671,24 +671,15 @@ fn parse_client_frame_raw(data: &[u8]) -> Option<(String, Client)> {
                 None
             }
         }
-        // Authentication — SA requesting auth from DA
-        (0, 11) => {
-            if bssid != "ff:ff:ff:ff:ff:ff" {
-                Some((
-                    bssid,
-                    Client {
-                        mac: sa,
-                        signal_dbm,
-                        packets: 1,
-                        last_seen: Instant::now(),
-                        associated: true,
-                        friendly_name: None,
-                    },
-                ))
-            } else {
-                None
-            }
-        }
+        // Authentication (subtype 11) — deliberately NOT used for client
+        // discovery. Our own AuthDos flood injects auth frames with a fresh
+        // spoofed SA every frame; the monitor interface (locked to the target's
+        // channel during an attack) captures them and would otherwise register
+        // thousands of phantom clients against the target BSSID. A bare auth with
+        // no following assoc/data is weak evidence of a real client anyway — a
+        // genuine station that authenticates also associates (subtype 0/2) or
+        // sends data, so it is still discovered through those paths.
+        (0, 11) => None,
         // Reassociation Request
         (0, 2) => {
             if bssid != "ff:ff:ff:ff:ff:ff" {
@@ -719,9 +710,9 @@ fn parse_client_frame_raw(data: &[u8]) -> Option<(String, Client)> {
                     // Client → AP: Addr1=BSSID(da var), Addr2=client(sa var)
                     let actual_bssid = da;
                     let client_mac = sa;
-                    if actual_bssid != "ff:ff:ff:ff:ff:ff"
+                    if !is_group_mac(&actual_bssid)
                         && !actual_bssid.starts_with("00:00:00")
-                        && client_mac != "ff:ff:ff:ff:ff:ff"
+                        && !is_group_mac(&client_mac)
                     {
                         Some((
                             actual_bssid,
@@ -742,9 +733,14 @@ fn parse_client_frame_raw(data: &[u8]) -> Option<(String, Client)> {
                     // AP → Client: Addr1=client(da var), Addr2=BSSID(sa var)
                     let actual_bssid = sa;
                     let client_mac = da;
-                    if actual_bssid != "ff:ff:ff:ff:ff:ff"
+                    // Addr1 here is the destination, which is frequently a group
+                    // address (broadcast/IPv4 mcast 01:00:5e.., IPv6 mcast 33:33..,
+                    // STP 01:80:c2..). Those are not clients — reject any address
+                    // with the I/G (group) bit set. (The old `!= "ff:ff:ff.."`
+                    // check was also a no-op: mac_to_string emits uppercase.)
+                    if !is_group_mac(&actual_bssid)
                         && !actual_bssid.starts_with("00:00:00")
-                        && client_mac != "ff:ff:ff:ff:ff:ff"
+                        && !is_group_mac(&client_mac)
                     {
                         Some((
                             actual_bssid,
@@ -865,6 +861,42 @@ fn mac_to_string(bytes: &[u8]) -> String {
         "{:02X}:{:02X}:{:02X}:{:02X}:{:02X}:{:02X}",
         bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5]
     )
+}
+
+/// True if `mac` (formatted "AA:BB:CC:..") is a group/multicast address — the
+/// I/G bit (least-significant bit of the first octet) is set. Covers broadcast
+/// (FF:..), IPv4 multicast (01:00:5E:..), IPv6 multicast (33:33:..), STP
+/// (01:80:C2:..), etc. Case-insensitive; malformed input returns false. Pure +
+/// platform-independent so it can be unit-tested on the macOS dev box.
+#[allow(dead_code)] // only called from the Linux-gated frame parser
+fn is_group_mac(mac: &str) -> bool {
+    mac.split(':')
+        .next()
+        .and_then(|oct| u8::from_str_radix(oct, 16).ok())
+        .map(|first| first & 0x01 == 1)
+        .unwrap_or(false)
+}
+
+#[cfg(test)]
+mod group_mac_tests {
+    use super::is_group_mac;
+
+    #[test]
+    fn rejects_group_and_broadcast() {
+        assert!(is_group_mac("FF:FF:FF:FF:FF:FF")); // broadcast
+        assert!(is_group_mac("ff:ff:ff:ff:ff:ff")); // case-insensitive
+        assert!(is_group_mac("01:00:5E:00:00:FB")); // IPv4 mcast (mDNS)
+        assert!(is_group_mac("33:33:00:00:00:FB")); // IPv6 mcast
+        assert!(is_group_mac("01:80:C2:00:00:00")); // STP
+    }
+
+    #[test]
+    fn accepts_unicast() {
+        assert!(!is_group_mac("A4:5E:60:11:22:33")); // real vendor unicast
+        assert!(!is_group_mac("02:11:22:33:44:55")); // locally-administered unicast (AuthDos spoof shape)
+        assert!(!is_group_mac("")); // malformed
+        assert!(!is_group_mac("zz")); // garbage
+    }
 }
 
 #[cfg(all(test, target_os = "linux"))]
