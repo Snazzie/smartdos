@@ -9,7 +9,7 @@ use std::sync::{
 use std::time::Duration;
 
 #[cfg(all(not(feature = "demo"), target_os = "linux"))]
-use crate::types::DeauthScope;
+use crate::types::{Band, DeauthScope};
 #[cfg(all(not(feature = "demo"), target_os = "linux"))]
 use crate::types::channel_to_freq_mhz;
 use crate::types::{AttackCommand, AttackEvent, AttackMode, AttackType, Target};
