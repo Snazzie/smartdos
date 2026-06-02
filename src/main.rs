@@ -824,6 +824,12 @@ fn handle_key_event(app: &mut App, key: KeyEvent) {
         }
         KeyCode::Char('a') | KeyCode::Char('A') => {
             app::toggle_attack_type(app);
+            if app.attack_type.is_destructive() {
+                app.add_log(
+                    "⚠ Auth-DoS: auth-floods AP association table — can crash AP firmware"
+                        .to_string(),
+                );
+            }
             let _ = persist::save_attack_settings(&persist::AttackSettings {
                 attack_type: app.attack_type,
                 attack_mode: app.attack_mode,

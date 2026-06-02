@@ -45,8 +45,7 @@
 | Feature                  | Description                                                                          |
 | ------------------------ | ------------------------------------------------------------------------------------ |
 | **Deauth Injection**     | Raw 802.11 deauth frames (FC `0xC0`) with radiotap header via pcap `sendpacket()`   |
-| **AuthDos**              | 802.11 authentication DoS — floods AP with spoofed auth requests                    |
-| **BeaconFlood**          | Beacon flood — injects fake SSIDs to saturate client scan tables                    |
+| **Auth-DoS**             | 802.11 auth flood — spams AP with spoofed auth requests from unique MACs, exhausting the association table and saturating the management CPU. Causes beacon starvation → SSID disappears. Can crash AP firmware (restart required). Not mitigated by WPA3 or 802.11w/PMF. |
 | **Broadcast Deauth**     | Deauthenticates all clients from a target AP (broadcast DA)                          |
 | **Client Deauth**        | Targeted deauth of a specific client MAC (bidirectional: AP→client and client→AP)   |
 | **Round-Robin Mode**     | Cycles through targets one at a time with configurable inter-burst delay             |
@@ -160,7 +159,7 @@ sudo ./target/release/smartdos wlan0mon
 | `c`             | View clients of selected AP                                  |
 | `n`             | Name selected client                                         |
 | `h`             | Toggle harvest mode on selected AP (AP list panel only)      |
-| `A`             | Cycle attack type (Deauth → AuthDos → BeaconFlood)           |
+| `A`             | Toggle attack type (Deauth ↔ Auth-DoS)                       |
 | `M`             | Toggle attack mode (Round-Robin ↔ Parallel)                  |
 | `P`             | Toggle pursuit mode                                          |
 | `G`             | Open settings overlay (burst size / send interval)           |

@@ -10,7 +10,7 @@ use ratatui::{
 };
 
 use crate::oui;
-use crate::types::{App, AttackMode, AttackType, Band, DeauthScope, InputMode, PageView, TabSelection, TargetSubSection};
+use crate::types::{App, AttackMode, Band, DeauthScope, InputMode, PageView, TabSelection, TargetSubSection};
 
 pub fn render(frame: &mut Frame, app: &mut App) {
     let area = frame.area();
@@ -761,15 +761,20 @@ fn render_logs(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(log_block, log_layout[0]);
 
     // Attack controls (right)
+    let is_flood = app.attack_type.is_destructive();
     let ctrl_block = Block::default()
         .title(" Attack Controls ")
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(Color::DarkGray));
+        .border_style(Style::default().fg(if is_flood { Color::Red } else { Color::DarkGray }));
 
     let ctrl_inner = ctrl_block.inner(log_layout[1]);
 
-    let type_txt = format!("Type: {}", app.attack_type.label());
+    let type_txt = format!(
+        "Type: {}{}",
+        if is_flood { "⚠ " } else { "" },
+        app.attack_type.label()  // "Deauth" or "AP-DoS"
+    );
 
     let mode_txt = format!(
         "Mode: {}",
@@ -802,11 +807,13 @@ fn render_logs(frame: &mut Frame, app: &App, area: Rect) {
     let ctrl_text = Text::from(vec![
         Line::from(Span::styled(
             type_txt,
-            Style::default().fg(if app.attack_type == AttackType::AuthDos {
-                Color::Magenta
-            } else {
-                Color::Cyan
-            }),
+            Style::default()
+                .fg(if is_flood { Color::Red } else { Color::Cyan })
+                .add_modifier(if is_flood { Modifier::BOLD } else { Modifier::empty() }),
+        )),
+        Line::from(Span::styled(
+            if is_flood { "  crashes AP firmware" } else { "" },
+            Style::default().fg(Color::DarkGray),
         )),
         Line::from(Span::styled(mode_txt, Style::default().fg(Color::Cyan))),
         Line::from(Span::styled(burst_txt, Style::default().fg(Color::White))),

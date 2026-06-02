@@ -172,8 +172,13 @@ impl AttackType {
     pub fn label(&self) -> &'static str {
         match self {
             AttackType::Deauth => "Deauth",
-            AttackType::AuthDos => "AuthDos",
+            AttackType::AuthDos => "Auth-DoS",
         }
+    }
+
+    /// True for attacks that can overwhelm AP firmware (crash/reboot the AP).
+    pub fn is_destructive(&self) -> bool {
+        matches!(self, AttackType::AuthDos)
     }
 }
 
