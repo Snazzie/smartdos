@@ -821,7 +821,7 @@ fn parse_client_frame_raw(data: &[u8]) -> Option<(String, Client)> {
 fn parse_radiotap_offset(data: &[u8]) -> (usize, i16) {
     if data.len() >= 4 && data[0] == 0 && data[1] == 0 {
         let rt_len = u16::from_le_bytes([data[2], data[3]]) as usize;
-        if rt_len >= 4 && rt_len <= 128 {
+        if rt_len >= 4 && rt_len <= data.len() {
             let sig = parse_radiotap_signal(data);
             return (rt_len, sig);
         }
@@ -852,52 +852,89 @@ fn parse_radiotap_freq(data: &[u8]) -> Option<u32> {
     if freq > 1000 { Some(freq) } else { None }
 }
 
-/// Parse radiotap header to extract antenna signal (dBm)
+/// Parse radiotap header to extract antenna signal (dBm).
+/// Handles multi-word present bitmaps (EXT bit) and natural field alignment.
 #[cfg(all(not(feature = "demo"), target_os = "linux"))]
 fn parse_radiotap_signal(data: &[u8]) -> i16 {
-    if data.len() < 8 {
+    if data.len() < 8 || data[0] != 0 || data[1] != 0 {
         return 0;
     }
 
-    let present = u32::from_le_bytes([data[4], data[5], data[6], data[7]]);
-    let mut field_offset: usize = 8;
-    let mut bit_index = 0;
+    // Collect all present words; each has EXT (bit 31) set if another follows.
+    let mut present_words: [u32; 8] = [0; 8];
+    let mut num_words = 0usize;
+    let mut pw_off = 4usize;
+    loop {
+        if pw_off + 4 > data.len() || num_words >= 8 {
+            return 0;
+        }
+        let pw = u32::from_le_bytes([data[pw_off], data[pw_off+1], data[pw_off+2], data[pw_off+3]]);
+        present_words[num_words] = pw;
+        num_words += 1;
+        pw_off += 4;
+        if pw & (1 << 31) == 0 { break; }
+    }
 
-    while bit_index < 32 {
-        let check_bit = 1u32 << bit_index;
-        if present & check_bit != 0 {
-            match bit_index {
-                0 => field_offset += 8, // TSFT
+    // Field data begins immediately after all present words.
+    let mut field_offset = pw_off;
+
+    for wi in 0..num_words {
+        let present = present_words[wi];
+        for bit in 0..29u32 { // bits 29/30/31 are NS/EXT control, not fields
+            if present & (1 << bit) == 0 { continue; }
+            let global_bit = wi as u32 * 32 + bit;
+            match global_bit {
+                0 => { // TSFT: align 8, size 8
+                    field_offset = (field_offset + 7) & !7;
+                    field_offset += 8;
+                }
                 1 => field_offset += 1, // Flags
                 2 => field_offset += 1, // Rate
-                3 => field_offset += 4, // Channel
-                4 => field_offset += 2, // FHSS
-                5 => {
+                3 => { // Channel: align 2, size 4
+                    field_offset = (field_offset + 1) & !1;
+                    field_offset += 4;
+                }
+                4 => { // FHSS: align 2, size 2
+                    field_offset = (field_offset + 1) & !1;
+                    field_offset += 2;
+                }
+                5 => { // Antenna Signal: align 1, size 1
                     if field_offset < data.len() {
                         return data[field_offset] as i8 as i16;
                     }
-                    field_offset += 1;
+                    return 0;
                 }
-                6 => field_offset += 1,   // Antenna Noise
-                7 => field_offset += 2,   // Lock Quality
-                8 => field_offset += 2,   // TX Attenuation
-                9 => field_offset += 2,   // DB TX Attenuation
-                10 => field_offset += 1,  // TX Power
-                11 => field_offset += 1,  // Antenna
-                12 => field_offset += 1,  // DB Antenna Signal
-                13 => field_offset += 1,  // DB Antenna Noise
-                14 => field_offset += 2,  // RX Flags
-                15 => field_offset += 2,  // TX Flags
-                16 => field_offset += 1,  // RTS Retries
-                17 => field_offset += 1,  // HW Queue
-                18 => field_offset += 3,  // RSSI (experimental)
+                6 => field_offset += 1,  // Antenna Noise
+                7 => { // Lock Quality: align 2, size 2
+                    field_offset = (field_offset + 1) & !1;
+                    field_offset += 2;
+                }
+                8 => { // TX Attenuation: align 2, size 2
+                    field_offset = (field_offset + 1) & !1;
+                    field_offset += 2;
+                }
+                9 => { // DB TX Attenuation: align 2, size 2
+                    field_offset = (field_offset + 1) & !1;
+                    field_offset += 2;
+                }
+                10 => field_offset += 1, // TX Power
+                11 => field_offset += 1, // Antenna
+                12 => field_offset += 1, // DB Antenna Signal
+                13 => field_offset += 1, // DB Antenna Noise
+                14 => { // RX Flags: align 2, size 2
+                    field_offset = (field_offset + 1) & !1;
+                    field_offset += 2;
+                }
+                15 => { // TX Flags: align 2, size 2
+                    field_offset = (field_offset + 1) & !1;
+                    field_offset += 2;
+                }
+                16 => field_offset += 1, // RTS Retries
+                17 => field_offset += 1, // HW Queue
+                18 => field_offset += 3, // RSSI (experimental)
                 19 => field_offset += 18, // XChannel
-                _ => field_offset += 4,   // unknown, skip
+                _  => field_offset += 4,  // unknown
             }
-        }
-        bit_index += 1;
-        if bit_index == 32 && present & (1 << 31) != 0 {
-            break; // skip extended flags for now
         }
     }
 

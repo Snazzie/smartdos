@@ -235,7 +235,7 @@ fn render_ap_list(frame: &mut Frame, app: &App, area: Rect) {
             } else {
                 let marker = if is_harvested { "◆" } else if is_followed { "▶" } else { " " };
                 Span::styled(
-                    format!("{}{}", marker, truncate_str(&ap.ssid, 14)),
+                    format!("{}{}", marker, ap.ssid),
                     Style::default(),
                 )
             };
@@ -479,7 +479,7 @@ fn render_targets_panel(frame: &mut Frame, app: &App, area: Rect) {
                 Cell::from(Span::styled("CLIENT", Style::default().fg(Color::Cyan)))
             };
             Row::new(vec![
-                Cell::from(truncate_str(&target.ssid, 12)),
+                Cell::from(target.ssid.as_str()),
                 Cell::from(truncate_str(&target.bssid, 17)),
                 Cell::from(format!("{:>2}", target.channel)),
                 Cell::from(Span::styled(
