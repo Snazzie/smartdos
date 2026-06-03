@@ -84,6 +84,9 @@ pub fn start_scanner(
                 while let Ok(cmd) = cmd_rx.try_recv() {
                     match cmd {
                         ScannerCommand::LockChannel(ch, band) => {
+                            let _ = event_tx.send(ScannerEvent::Error(format!(
+                                "[dbg] LockChannel ch{} received (was locked={})", ch, locked
+                            )));
                             match set_channel(&iface, ch, band) {
                                 Ok(()) => {
                                     let _ = event_tx.send(ScannerEvent::ChannelChanged { channel: ch, band });
@@ -137,6 +140,11 @@ pub fn start_scanner(
                     // returns to drain commands (LockChannel/FreeHop/shutdown) and
                     // simply resumes the sweep from where it left off next tick.
                     let hop_timer_elapsed = last_channel_hop.elapsed().as_millis();
+                    let cur_ch = scan_channels.get(channel_idx).map(|(c,_)| *c).unwrap_or(0);
+                    let _ = event_tx.send(ScannerEvent::Error(format!(
+                        "[dbg] dwell {}ms on ch{} → hopping (locked={})",
+                        hop_timer_elapsed, cur_ch, locked
+                    )));
                     const MAX_HOP_ATTEMPTS: usize = 4;
                     let attempts = MAX_HOP_ATTEMPTS.min(scan_channels.len());
                     let mut hopped = false;
