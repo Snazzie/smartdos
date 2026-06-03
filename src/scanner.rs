@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 
 use crate::types::{AccessPoint, Band, Client, ScannerCommand, ScannerEvent, CHANNEL_HOP_MS, scan_channels_for};
 #[cfg(all(not(feature = "demo"), target_os = "linux"))]
-use crate::types::{channel_to_freq_mhz, freq_to_band, freq_to_channel};
+use crate::types::{band_from_channel, channel_to_freq_mhz, freq_to_band, freq_to_channel};
 
 // ── Linux implementation ──────────────────────────────────────────────────────
 
