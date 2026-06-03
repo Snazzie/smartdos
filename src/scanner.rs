@@ -136,24 +136,33 @@ pub fn start_scanner(
                     // so a long failing run can't monopolise the loop — the scanner
                     // returns to drain commands (LockChannel/FreeHop/shutdown) and
                     // simply resumes the sweep from where it left off next tick.
+                    let hop_timer_elapsed = last_channel_hop.elapsed().as_millis();
                     const MAX_HOP_ATTEMPTS: usize = 4;
                     let attempts = MAX_HOP_ATTEMPTS.min(scan_channels.len());
                     let mut hopped = false;
                     for _ in 0..attempts {
                         channel_idx = (channel_idx + 1) % scan_channels.len();
                         let (ch, band) = scan_channels[channel_idx];
-                        match set_channel(&iface, ch, band) {
+                        let tune_start = Instant::now();
+                        let result = set_channel(&iface, ch, band);
+                        let tune_ms = tune_start.elapsed().as_millis();
+                        match result {
                             Ok(()) => {
                                 failed_channels.remove(&(ch, band));
                                 last_successful_hop = Instant::now();
+                                let _ = event_tx.send(ScannerEvent::Error(format!(
+                                    "[hop] ch{} ok in {}ms (timer was {}ms overdue)",
+                                    ch, tune_ms,
+                                    hop_timer_elapsed.saturating_sub(CHANNEL_HOP_MS as u128)
+                                )));
                                 let _ = event_tx.send(ScannerEvent::ChannelChanged { channel: ch, band });
                                 hopped = true;
                                 break;
                             }
                             Err(e) => {
-                                // Log each failing channel once (until it recovers)
-                                // so a permanently-disabled channel doesn't re-spam
-                                // the log on every pass.
+                                let _ = event_tx.send(ScannerEvent::Error(format!(
+                                    "[hop] ch{} FAIL in {}ms: {}", ch, tune_ms, e
+                                )));
                                 if failed_channels.insert((ch, band)) {
                                     let _ = event_tx.send(ScannerEvent::Error(format!(
                                         "Channel ch{} ({}) unavailable: {}", ch, band.label(), e
