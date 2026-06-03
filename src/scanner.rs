@@ -368,14 +368,14 @@ fn open_capture(iface: &str) -> Result<Capture<pcap::Active>> {
     let mut cap = match device {
         Some(dev) => Capture::from_device(dev.name.as_str())
             .context("Failed to create capture from device")?
-            .timeout(10)
+            .timeout(200)
             .promisc(true)
             .snaplen(65535)
             .open()
             .context(format!("Failed to open capture on {}", iface))?,
         None => Capture::from_device(iface)
             .context("Failed to create capture from device name")?
-            .timeout(10)
+            .timeout(200)
             .promisc(true)
             .snaplen(65535)
             .open()
