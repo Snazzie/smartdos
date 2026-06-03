@@ -344,7 +344,11 @@ fn set_channel(iface: &str, channel: u8, band: Band) -> Result<()> {
             None => {
                 if Instant::now() >= deadline {
                     let _ = child.kill();
-                    let _ = child.wait();
+                    // Do NOT call child.wait() here — iw may be in kernel D-state
+                    // (uninterruptible sleep waiting for the driver to ack the freq
+                    // change). wait() would block the scanner thread for seconds.
+                    // Spawn a reaper so the zombie is cleaned up without blocking.
+                    std::thread::spawn(move || { let _ = child.wait(); });
                     anyhow::bail!(
                         "iw set freq {} MHz (ch {}) timed out after {}ms",
                         freq,
