@@ -71,6 +71,7 @@ pub fn start_scanner(
                 std::collections::HashSet::new();
             let mut locked = false;
             let mut sweep_mac: Option<String> = None;
+            let mut last_successful_hop = Instant::now();
             // Lazily-created handshake/PMKID capture file (opened on first EAPOL).
             let mut hs_writer: Option<crate::handshake::PcapWriter> = None;
             // BSSIDs whose beacon has already been written to the capture — one
@@ -128,13 +129,16 @@ pub fn start_scanner(
                     // simply resumes the sweep from where it left off next tick.
                     const MAX_HOP_ATTEMPTS: usize = 4;
                     let attempts = MAX_HOP_ATTEMPTS.min(scan_channels.len());
+                    let mut hopped = false;
                     for _ in 0..attempts {
                         channel_idx = (channel_idx + 1) % scan_channels.len();
                         let (ch, band) = scan_channels[channel_idx];
                         match set_channel(&iface, ch, band) {
                             Ok(()) => {
                                 failed_channels.remove(&(ch, band));
+                                last_successful_hop = Instant::now();
                                 let _ = event_tx.send(ScannerEvent::ChannelChanged { channel: ch, band });
+                                hopped = true;
                                 break;
                             }
                             Err(e) => {
@@ -143,11 +147,23 @@ pub fn start_scanner(
                                 // the log on every pass.
                                 if failed_channels.insert((ch, band)) {
                                     let _ = event_tx.send(ScannerEvent::Error(format!(
-                                        "Channel ch{} ({}) unavailable, skipping: {}", ch, band.label(), e
+                                        "Channel ch{} ({}) unavailable: {}", ch, band.label(), e
                                     )));
                                 }
                             }
                         }
+                    }
+                    // All attempts failed — emit a stall warning once we've been
+                    // stuck for >5 s so the UI surfaces the problem rather than
+                    // looking frozen.
+                    if !hopped && last_successful_hop.elapsed() > Duration::from_secs(5) {
+                        let _ = event_tx.send(ScannerEvent::Error(format!(
+                            "Channel hop stalled: no usable channel in last {} attempts ({}s since last hop)",
+                            attempts,
+                            last_successful_hop.elapsed().as_secs(),
+                        )));
+                        // Reset so we re-emit every 5 s rather than every tick.
+                        last_successful_hop = Instant::now();
                     }
                     last_channel_hop = Instant::now();
                 }
@@ -277,7 +293,7 @@ pub fn start_scanner(
 /// normal failure so the hop loop just skips the channel and moves on.
 #[cfg(all(not(feature = "demo"), target_os = "linux"))]
 fn set_channel(iface: &str, channel: u8, band: Band) -> Result<()> {
-    const TUNE_TIMEOUT: Duration = Duration::from_millis(700);
+    const TUNE_TIMEOUT: Duration = Duration::from_millis(150);
     let freq = channel_to_freq_mhz(channel, band);
     let mut child = std::process::Command::new("iw")
         .args(["dev", iface, "set", "freq", &freq.to_string()])
@@ -318,7 +334,7 @@ fn set_channel(iface: &str, channel: u8, band: Band) -> Result<()> {
                         TUNE_TIMEOUT.as_millis()
                     );
                 }
-                std::thread::sleep(Duration::from_millis(10));
+                std::thread::sleep(Duration::from_millis(5));
             }
         }
     }
@@ -532,7 +548,7 @@ fn parse_beacon_frame_raw(data: &[u8]) -> Option<AccessPoint> {
 }
 
 /// Decode RSN IE (tag 48) → "WPA2", "WPA3", "W2-Ent", "W2/TKIP", "OWE", etc.
-#[cfg(all(not(feature = "demo"), target_os = "linux"))]
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 fn parse_rsn_ie(ie: &[u8]) -> String {
     // Layout: 2B version | 4B group cipher | 2B pairwise count | N*4B pairwise | 2B AKM count | N*4B AKM
     if ie.len() < 8 {
@@ -817,7 +833,7 @@ fn parse_client_frame_raw(data: &[u8]) -> Option<(String, Client)> {
 }
 
 /// Parse radiotap header to get offset and signal, or return (0, 0) for raw 802.11
-#[cfg(all(not(feature = "demo"), target_os = "linux"))]
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 fn parse_radiotap_offset(data: &[u8]) -> (usize, i16) {
     if data.len() >= 4 && data[0] == 0 && data[1] == 0 {
         let rt_len = u16::from_le_bytes([data[2], data[3]]) as usize;
@@ -830,20 +846,36 @@ fn parse_radiotap_offset(data: &[u8]) -> (usize, i16) {
 }
 
 /// Extract channel frequency (MHz) from radiotap Channel field (present bit 3).
-#[cfg(all(not(feature = "demo"), target_os = "linux"))]
+/// Mirrors the EXT-word handling from parse_radiotap_signal so multi-word
+/// present bitmaps don't make us read a present-word fragment as a frequency.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 fn parse_radiotap_freq(data: &[u8]) -> Option<u32> {
     if data.len() < 8 || data[0] != 0 || data[1] != 0 {
         return None;
     }
-    let present = u32::from_le_bytes([data[4], data[5], data[6], data[7]]);
-    if present & (1 << 3) == 0 {
+    // Walk all present words so field data starts at the right offset.
+    let mut pw_off = 4usize;
+    let mut first_present = 0u32;
+    let mut found_first = false;
+    loop {
+        if pw_off + 4 > data.len() { return None; }
+        let pw = u32::from_le_bytes([data[pw_off], data[pw_off+1], data[pw_off+2], data[pw_off+3]]);
+        if !found_first { first_present = pw; found_first = true; }
+        pw_off += 4;
+        if pw & (1 << 31) == 0 { break; }
+    }
+    // Channel (bit 3) is always a first-word field.
+    if first_present & (1 << 3) == 0 {
         return None;
     }
-    let mut offset = 8usize;
-    if present & (1 << 0) != 0 { offset += 8; } // TSFT: u64 (align 8)
-    if present & (1 << 1) != 0 { offset += 1; } // Flags: u8
-    if present & (1 << 2) != 0 { offset += 1; } // Rate: u8
-    // Channel field is u16 — must be 2-byte aligned
+    let mut offset = pw_off; // field data begins after all present words
+    if first_present & (1 << 0) != 0 { // TSFT: align 8, size 8
+        offset = (offset + 7) & !7;
+        offset += 8;
+    }
+    if first_present & (1 << 1) != 0 { offset += 1; } // Flags: u8
+    if first_present & (1 << 2) != 0 { offset += 1; } // Rate: u8
+    // Channel: align 2, size 4 (freq u16 + flags u16)
     if offset % 2 != 0 { offset += 1; }
     if offset + 2 > data.len() {
         return None;
@@ -854,7 +886,7 @@ fn parse_radiotap_freq(data: &[u8]) -> Option<u32> {
 
 /// Parse radiotap header to extract antenna signal (dBm).
 /// Handles multi-word present bitmaps (EXT bit) and natural field alignment.
-#[cfg(all(not(feature = "demo"), target_os = "linux"))]
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 fn parse_radiotap_signal(data: &[u8]) -> i16 {
     if data.len() < 8 || data[0] != 0 || data[1] != 0 {
         return 0;
@@ -941,7 +973,7 @@ fn parse_radiotap_signal(data: &[u8]) -> i16 {
     0
 }
 
-#[cfg(all(not(feature = "demo"), target_os = "linux"))]
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 fn mac_to_string(bytes: &[u8]) -> String {
     if bytes.len() < 6 {
         return String::new();
@@ -988,7 +1020,7 @@ mod group_mac_tests {
     }
 }
 
-#[cfg(all(test, target_os = "linux"))]
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -1058,6 +1090,99 @@ mod tests {
         // present bitmap = bit5 (antenna signal); signal byte at offset 8.
         let data = [0u8, 0, 9, 0, 0x20, 0, 0, 0, (-50i8) as u8];
         assert_eq!(parse_radiotap_signal(&data), -50);
+    }
+
+    // ── radiotap EXT-bit regression tests ────────────────────────────────────
+    // Modern mac80211 drivers emit multi-word present bitmaps (bit 31 = EXT).
+    // Before the fix, parse_radiotap_signal/freq used offset=8 as the start of
+    // field data regardless of how many present words preceded it, so they read
+    // present-word bytes as signal/frequency — producing garbage like 2627 MHz.
+
+    #[test]
+    fn radiotap_signal_ext_word_field_starts_after_all_present_words() {
+        // Two present words: word0 = bit5 (signal) | bit31 (EXT), word1 = 0.
+        // Field data starts at byte 12 (after both present words), not byte 8.
+        let signal: u8 = (-70i8) as u8;
+        let data: &[u8] = &[
+            0x00, 0x00,             // version, pad
+            0x0D, 0x00,             // rt_len = 13
+            0x20, 0x00, 0x00, 0x80, // present word 0: bit5 | bit31(EXT)
+            0x00, 0x00, 0x00, 0x00, // present word 1: empty
+            signal,                 // Antenna Signal at byte 12
+        ];
+        assert_eq!(parse_radiotap_signal(data), -70);
+    }
+
+    #[test]
+    fn radiotap_freq_single_present_word_returns_channel_freq() {
+        // Baseline: one present word, bit3 (Channel) set, field data at byte 8.
+        // freq = 2437 MHz (channel 6).
+        let data: &[u8] = &[
+            0x00, 0x00,             // version, pad
+            0x0C, 0x00,             // rt_len = 12
+            0x08, 0x00, 0x00, 0x00, // present word 0: bit3 (Channel)
+            0x85, 0x09,             // freq = 0x0985 = 2437 MHz (LE)
+            0xA0, 0x00,             // channel flags
+        ];
+        assert_eq!(parse_radiotap_freq(data), Some(2437));
+    }
+
+    #[test]
+    fn radiotap_freq_ext_word_reads_field_after_all_present_words() {
+        // Two present words: word0 = bit3 (Channel) | bit31 (EXT), word1 = 0.
+        // Field data starts at byte 12.  freq = 5180 MHz (channel 36).
+        let data: &[u8] = &[
+            0x00, 0x00,             // version, pad
+            0x10, 0x00,             // rt_len = 16
+            0x08, 0x00, 0x00, 0x80, // present word 0: bit3 | bit31(EXT)
+            0x00, 0x00, 0x00, 0x00, // present word 1: empty
+            0x3C, 0x14,             // freq = 0x143C = 5180 MHz (LE)
+            0x00, 0x01,             // channel flags
+        ];
+        assert_eq!(parse_radiotap_freq(data), Some(5180));
+    }
+
+    #[test]
+    fn radiotap_freq_ext_bit_does_not_return_2627_regression() {
+        // Regression: with EXT bit set, the second present word happened to
+        // decode as 2627 MHz (0x0A43 LE) if the old code read bytes [8..10].
+        // New code must read bytes [12..14] and return the real frequency.
+        let data: &[u8] = &[
+            0x00, 0x00,             // version, pad
+            0x10, 0x00,             // rt_len = 16
+            0x08, 0x00, 0x00, 0x80, // present word 0: bit3 | bit31(EXT)
+            0x43, 0x0A, 0x00, 0x00, // present word 1: bytes [8..10] = 0x0A43 = 2627 (old bug)
+            0x71, 0x16,             // real freq = 0x1671 = 5745 MHz (LE)
+            0x00, 0x01,             // channel flags
+        ];
+        let freq = parse_radiotap_freq(data);
+        assert_ne!(freq, Some(2627), "must not decode present-word bytes as frequency");
+        assert_eq!(freq, Some(5745));
+    }
+
+    #[test]
+    fn radiotap_freq_tsft_alignment_with_ext_word() {
+        // TSFT (bit 0) needs 8-byte alignment.  With two present words the field
+        // data starts at byte 12, which is not 8-byte aligned — 4 bytes of
+        // implicit padding bring TSFT to byte 16, then Channel lands at byte 24.
+        let mut data = vec![
+            0x00, 0x00,             // version, pad
+            0x1C, 0x00,             // rt_len = 28
+            0x09, 0x00, 0x00, 0x80, // present word 0: bit0 (TSFT) | bit3 (Channel) | bit31 (EXT)
+            0x00, 0x00, 0x00, 0x00, // present word 1: empty
+            // byte 12: field data start; TSFT needs align-8 → pad to byte 16
+            0x00, 0x00, 0x00, 0x00, // alignment padding
+            // TSFT: 8 bytes at byte 16
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            // Channel: byte 24 (already 2-byte aligned)
+            0x9E, 0x09,             // freq = 0x099E = 2462 MHz (ch11, LE)
+            0x00, 0x00,             // channel flags
+        ];
+        assert_eq!(data.len(), 28);
+        assert_eq!(parse_radiotap_freq(&data), Some(2462));
+        // Corrupt the TSFT region to prove the parser isn't accidentally reading it
+        for b in &mut data[16..24] { *b = 0xFF; }
+        assert_eq!(parse_radiotap_freq(&data), Some(2462));
     }
 }
 

@@ -241,7 +241,15 @@ fn process_scanner_events(app: &mut App) {
     // Sort once per tick instead of on every event — keeps the drain O(n) in
     // events rather than O(n log n) per event under heavy beacon traffic.
     if needs_sort && app.ap_list.len() > 1 {
-        app.ap_list.sort_by(|a, b| b.signal_dbm.cmp(&a.signal_dbm));
+        // Snapshot the currently-selected BSSID before sorting so the index
+        // tracks the same AP after the list is reordered by signal strength.
+        let anchor = app.ap_list.get(app.selected_ap_idx).map(|a| a.bssid.clone());
+        app.ap_list.sort_by(|a, b| a.ssid.cmp(&b.ssid));
+        if let Some(bssid) = anchor {
+            if let Some(new_idx) = app.ap_list.iter().position(|a| a.bssid == bssid) {
+                app.selected_ap_idx = new_idx;
+            }
+        }
     }
 }
 

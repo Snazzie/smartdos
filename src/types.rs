@@ -318,6 +318,7 @@ pub struct App {
     pub cpu_usage: f32,
     pub sys: System,
     pub channel_focused: bool, // true while locked to an AP's channel for client discovery
+    pub focused_ap_bssid: Option<String>, // BSSID of AP selected when entering clients view
     pub ap_filter: String,     // live SSID/BSSID filter text; empty = show all
     pub band_2ghz_enabled: bool,
     pub band_5ghz_enabled: bool,
@@ -405,6 +406,7 @@ impl App {
             cpu_usage: 0.0,
             sys: System::new_all(),
             channel_focused: false,
+            focused_ap_bssid: None,
             ap_filter: String::new(),
             band_2ghz_enabled: true,
             band_5ghz_enabled: true,
@@ -721,5 +723,66 @@ mod tests {
         assert!(!app.is_ap_harvested("AA:BB:CC:DD:EE:FF"));
         app.toggle_ap_harvest("AA:BB:CC:DD:EE:FF");
         assert!(app.is_ap_harvested("AA:BB:CC:DD:EE:FF"));
+    }
+
+    // ── channel / band / frequency roundtrip tests ────────────────────────────
+
+    #[test]
+    fn channel_to_freq_roundtrips_all_2ghz_channels() {
+        for &ch in CHANNELS_2GHZ {
+            let freq = channel_to_freq_mhz(ch, Band::TwoGHz);
+            assert_eq!(
+                freq_to_band(freq), Band::TwoGHz,
+                "ch{} on 2G: freq {} maps to wrong band", ch, freq
+            );
+            assert_eq!(
+                freq_to_channel(freq), ch,
+                "ch{} on 2G: freq {} roundtrips to wrong channel", ch, freq
+            );
+        }
+    }
+
+    #[test]
+    fn channel_to_freq_roundtrips_all_5ghz_channels() {
+        for &ch in CHANNELS_5GHZ {
+            let freq = channel_to_freq_mhz(ch, Band::FiveGHz);
+            assert_eq!(
+                freq_to_band(freq), Band::FiveGHz,
+                "ch{} on 5G: freq {} maps to wrong band", ch, freq
+            );
+            assert_eq!(
+                freq_to_channel(freq), ch,
+                "ch{} on 5G: freq {} roundtrips to wrong channel", ch, freq
+            );
+        }
+    }
+
+    #[test]
+    fn channel_to_freq_roundtrips_all_6ghz_channels() {
+        for &ch in CHANNELS_6GHZ {
+            let freq = channel_to_freq_mhz(ch, Band::SixGHz);
+            assert_eq!(
+                freq_to_band(freq), Band::SixGHz,
+                "ch{} on 6G: freq {} maps to wrong band", ch, freq
+            );
+            assert_eq!(
+                freq_to_channel(freq), ch,
+                "ch{} on 6G: freq {} roundtrips to wrong channel", ch, freq
+            );
+        }
+    }
+
+    #[test]
+    fn freq_to_band_does_not_map_garbage_to_valid_band() {
+        // Frequencies that can appear from a mis-parsed radiotap header must not
+        // silently produce a plausible band — the old EXT-bit bug produced 2627 MHz.
+        // freq_to_band's fallback is TwoGHz, which is unavoidable for a pure fn,
+        // but we verify it doesn't map to Five/SixGHz for out-of-band values.
+        let garbage = [0u32, 1000, 2627, 3000, 4000, 5850, 5900, 7200, 9999];
+        for &f in &garbage {
+            let band = freq_to_band(f);
+            assert_ne!(band, Band::FiveGHz, "garbage freq {} should not map to 5 GHz", f);
+            assert_ne!(band, Band::SixGHz,  "garbage freq {} should not map to 6 GHz", f);
+        }
     }
 }

@@ -699,6 +699,7 @@ fn handle_key_event(app: &mut App, key: KeyEvent) {
                 TabSelection::ClientList => {
                     // Leave client list — resume broad scanning
                     app.tab_selection = TabSelection::ApList;
+                    app.focused_ap_bssid = None;
                     if app.channel_focused {
                         app.channel_focused = false;
                         if let Some(ref tx) = app.scanner_cmd_tx {
@@ -714,6 +715,7 @@ fn handle_key_event(app: &mut App, key: KeyEvent) {
                     if let Some(ap) = app.ap_list.get(app.selected_ap_idx) {
                         let ch = ap.channel;
                         let band = ap.band;
+                        app.focused_ap_bssid = Some(ap.bssid.clone());
                         if ch != 0 {
                             app.channel_focused = true;
                             if let Some(ref tx) = app.scanner_cmd_tx {
