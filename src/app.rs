@@ -79,7 +79,7 @@ fn sync_target_to_discovered_ap(app: &mut App, bssid: &str, channel: u8, band: B
         return;
     }
     if let Some(target) = app.targets.iter_mut().find(|t| t.bssid == bssid) {
-        if target.channel != channel {
+        if target.channel != channel || target.band != band {
             target.channel = channel;
             target.band = band;
             if app.pursuit_mode && app.attack_running {
