@@ -773,6 +773,17 @@ mod tests {
     }
 
     #[test]
+    fn channel_44_is_5ghz_not_2ghz() {
+        // Channel 44 is a 5 GHz channel (5220 MHz). Classifying it as 2.4 GHz
+        // produces freq 2627 MHz which iw rejects with EINVAL (-22).
+        assert_eq!(channel_to_freq_mhz(44, Band::FiveGHz), 5220);
+        assert_ne!(channel_to_freq_mhz(44, Band::TwoGHz), 5220); // 2627 — wrong
+        // freq_to_band must not claim 5 GHz channels belong to 2.4 GHz
+        assert_eq!(freq_to_band(5220), Band::FiveGHz);
+        assert_eq!(freq_to_channel(5220), 44);
+    }
+
+    #[test]
     fn freq_to_band_does_not_map_garbage_to_valid_band() {
         // Frequencies that can appear from a mis-parsed radiotap header must not
         // silently produce a plausible band — the old EXT-bit bug produced 2627 MHz.

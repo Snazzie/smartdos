@@ -509,13 +509,8 @@ fn parse_beacon_frame_raw(data: &[u8]) -> Option<AccessPoint> {
     // Priority: radiotap frequency > DS Parameter Set (tag 3) > HT Operation (tag 61).
     // 5GHz APs often omit tag 3; WiFi 6 APs sometimes omit both — fall back to radiotap.
     let radiotap_freq = parse_radiotap_freq(data);
-    let band = radiotap_freq
-        .map(freq_to_band)
-        .unwrap_or_else(|| {
-            let ch = if channel != 0 { channel } else { ht_channel };
-            if ch > 14 { Band::FiveGHz } else { Band::TwoGHz }
-        });
-    // Channel: prefer tag 3 / tag 61 IEs; fall back to frequency→channel conversion
+    // Channel: prefer tag 3 / tag 61 IEs; fall back to frequency→channel conversion.
+    // Compute before band so the cross-validation below can use effective_channel.
     let effective_channel = if channel != 0 {
         channel
     } else if ht_channel != 0 {
@@ -523,6 +518,15 @@ fn parse_beacon_frame_raw(data: &[u8]) -> Option<AccessPoint> {
     } else {
         radiotap_freq.map(freq_to_channel).unwrap_or(0)
     };
+    // Band: only trust radiotap_freq when it's in a recognised range — garbage
+    // values (e.g. 2627 from a mis-parsed present-word) map to TwoGHz via the
+    // freq_to_band fallback and would misclassify 5 GHz APs (iPhone ch 44 → 2627).
+    // If radiotap is absent or out-of-range, infer from the IE-derived channel:
+    // any channel > 14 must be 5 GHz; <= 14 is 2.4 GHz.
+    let band = radiotap_freq
+        .filter(|&f| matches!(f, 2412..=2484 | 5180..=5825 | 5925..=7125))
+        .map(freq_to_band)
+        .unwrap_or_else(|| if effective_channel > 14 { Band::FiveGHz } else { Band::TwoGHz });
 
     let signal_percent = if signal_dbm >= -30 {
         100
