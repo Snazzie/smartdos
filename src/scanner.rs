@@ -84,13 +84,22 @@ pub fn start_scanner(
                 while let Ok(cmd) = cmd_rx.try_recv() {
                     match cmd {
                         ScannerCommand::LockChannel(ch, band) => {
-                            if let Err(e) = set_channel(&iface, ch, band) {
-                                let _ = event_tx.send(ScannerEvent::Error(format!("Channel lock failed: {}", e)));
+                            match set_channel(&iface, ch, band) {
+                                Ok(()) => {
+                                    let _ = event_tx.send(ScannerEvent::ChannelChanged { channel: ch, band });
+                                    locked = true;
+                                    sweep_mac = None;
+                                    last_channel_hop = Instant::now();
+                                }
+                                Err(e) => {
+                                    // Don't lock on failure — keeps the scanner hopping rather
+                                    // than parking on a channel it can't tune to (e.g. a
+                                    // persisted AP whose band was misclassified, 2627 MHz).
+                                    let _ = event_tx.send(ScannerEvent::Error(format!(
+                                        "Channel lock failed ch{} ({}): {}", ch, band.label(), e
+                                    )));
+                                }
                             }
-                            let _ = event_tx.send(ScannerEvent::ChannelChanged { channel: ch, band });
-                            locked = true;
-                            sweep_mac = None;
-                            last_channel_hop = Instant::now();
                         }
                         ScannerCommand::FreeHop => {
                             locked = false;
@@ -526,7 +535,7 @@ fn parse_beacon_frame_raw(data: &[u8]) -> Option<AccessPoint> {
     let band = radiotap_freq
         .filter(|&f| matches!(f, 2412..=2484 | 5180..=5825 | 5925..=7125))
         .map(freq_to_band)
-        .unwrap_or_else(|| if effective_channel > 14 { Band::FiveGHz } else { Band::TwoGHz });
+        .unwrap_or_else(|| band_from_channel(effective_channel));
 
     let signal_percent = if signal_dbm >= -30 {
         100

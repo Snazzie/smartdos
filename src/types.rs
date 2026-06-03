@@ -48,6 +48,25 @@ pub fn channel_to_freq_mhz(channel: u8, band: Band) -> u32 {
     }
 }
 
+/// Infer band from channel number alone.
+///
+/// | Range      | Band                                           |
+/// |------------|------------------------------------------------|
+/// | 1–14       | 2.4 GHz (standard 2.4 GHz channels)           |
+/// | 36–177     | 5 GHz  (UNII-1/2/2E/3, non-DFS and DFS)       |
+/// | 178–233    | 6 GHz  (upper 6 GHz primaries, no 2.4 overlap) |
+///
+/// Channels 1/5/9/13 appear in BOTH 2.4 GHz and 6 GHz — this function
+/// conservatively returns TwoGHz for that ambiguous range.  Callers that
+/// have radiotap frequency context should prefer `freq_to_band` instead.
+pub fn band_from_channel(channel: u8) -> Band {
+    match channel {
+        36..=177 => Band::FiveGHz,
+        178..=233 => Band::SixGHz,
+        _ => Band::TwoGHz,
+    }
+}
+
 /// Infer band from radiotap-reported frequency.
 pub fn freq_to_band(freq_mhz: u32) -> Band {
     match freq_mhz {
@@ -770,6 +789,25 @@ mod tests {
                 "ch{} on 6G: freq {} roundtrips to wrong channel", ch, freq
             );
         }
+    }
+
+    #[test]
+    fn band_from_channel_covers_all_ranges() {
+        // 2.4 GHz
+        assert_eq!(band_from_channel(1),   Band::TwoGHz);
+        assert_eq!(band_from_channel(6),   Band::TwoGHz);
+        assert_eq!(band_from_channel(11),  Band::TwoGHz);
+        assert_eq!(band_from_channel(14),  Band::TwoGHz);
+        // 5 GHz
+        assert_eq!(band_from_channel(36),  Band::FiveGHz);
+        assert_eq!(band_from_channel(44),  Band::FiveGHz); // iPhone regression
+        assert_eq!(band_from_channel(149), Band::FiveGHz);
+        assert_eq!(band_from_channel(165), Band::FiveGHz);
+        assert_eq!(band_from_channel(177), Band::FiveGHz);
+        // 6 GHz (non-overlapping upper range)
+        assert_eq!(band_from_channel(181), Band::SixGHz);
+        assert_eq!(band_from_channel(193), Band::SixGHz);
+        assert_eq!(band_from_channel(233), Band::SixGHz);
     }
 
     #[test]

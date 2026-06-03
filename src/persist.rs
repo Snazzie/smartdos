@@ -100,7 +100,9 @@ pub fn load_ap_list() -> Vec<AccessPoint> {
         .map(|s| AccessPoint {
             bssid: s.bssid,
             ssid: s.ssid,
-            band: s.band,
+            // Re-derive band from channel on load — persisted band may be stale
+            // if it was written before the band-from-channel fix (e.g. ch44 as TwoGHz).
+            band: crate::types::band_from_channel(s.channel),
             channel: s.channel,
             signal_dbm: s.signal_dbm,
             signal_percent: 0,
