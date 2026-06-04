@@ -331,6 +331,9 @@ pub fn start_scanner(
                                 existing.packets += 1;
                                 existing.last_seen = Instant::now();
                                 existing.encryption = ap.encryption;
+                                if let Some(clients) = client_map.get(&bssid) {
+                                    existing.clients = clients.values().cloned().collect();
+                                }
                                 let _ = event_tx.send(ScannerEvent::ApUpdated(existing.clone()));
                             } else {
                                 let mut new_ap = ap;
