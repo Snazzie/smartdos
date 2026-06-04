@@ -14,6 +14,47 @@ use crate::types::{band_from_channel, channel_to_freq_mhz, freq_to_band, freq_to
 
 // ── Linux implementation ──────────────────────────────────────────────────────
 
+/// Maximum number of consecutive hop-worker dispatches per hop tick before
+/// giving up and waiting for the next tick. Shared by the hop timer and the
+/// result-handler retry path.
+#[cfg(all(not(feature = "demo"), target_os = "linux"))]
+const MAX_HOP_ATTEMPTS: usize = 4;
+
+/// Spawn the hop-worker thread.
+///
+/// The worker blocks on `req_rx`, calls `set_channel`, then sends the result
+/// back. Using `sync_channel(1)` in both directions ensures at most one hop
+/// is in flight at a time and the scanner's `try_send` never needs to block.
+///
+/// The worker exits naturally when the scanner thread drops `hop_tx` (recv()
+/// returns Err on a disconnected sender).
+#[cfg(all(not(feature = "demo"), target_os = "linux"))]
+fn spawn_hop_worker(
+    iface: String,
+) -> (
+    std::sync::mpsc::SyncSender<(u8, Band)>,
+    std::sync::mpsc::Receiver<Result<(u8, Band)>>,
+) {
+    let (req_tx, req_rx) = std::sync::mpsc::sync_channel::<(u8, Band)>(1);
+    let (res_tx, res_rx) = std::sync::mpsc::sync_channel::<Result<(u8, Band)>>(1);
+
+    std::thread::Builder::new()
+        .name("hop-worker".into())
+        .spawn(move || {
+            while let Ok((ch, band)) = req_rx.recv() {
+                let result = set_channel(&iface, ch, band).map(|()| (ch, band));
+                // If the scanner has already exited (dropped res_tx side),
+                // sending will fail — just exit the loop cleanly.
+                if res_tx.send(result).is_err() {
+                    break;
+                }
+            }
+        })
+        .expect("failed to spawn hop-worker thread");
+
+    (req_tx, res_rx)
+}
+
 /// Run the scanner in a separate thread.
 ///
 /// Captures all 802.11 management frames (beacons, probe req/resp, assoc, auth)
@@ -48,6 +89,10 @@ pub fn start_scanner(
 
             let _ = event_tx.send(ScannerEvent::Error("Scanner started".into()));
 
+            // Spawn the dedicated hop-worker thread. Channel-tune calls happen
+            // there so pcap reads are never blocked by iw set freq latency.
+            let (hop_tx, hop_rx) = spawn_hop_worker(iface.clone());
+
             let mut ap_map: std::collections::HashMap<String, AccessPoint> =
                 std::collections::HashMap::new();
             // Track clients per AP BSSID
@@ -74,6 +119,11 @@ pub fn start_scanner(
             let mut last_successful_hop = Instant::now();
             let mut last_heartbeat = Instant::now();
             let mut loop_iters: u64 = 0;
+            // hop_pending: a request has been sent to the hop-worker and we are
+            // waiting for the result. Only one hop is in flight at a time.
+            let mut hop_pending = false;
+            // hop_attempts: how many consecutive failed dispatches this hop cycle.
+            let mut hop_attempts = 0usize;
             // Lazily-created handshake/PMKID capture file (opened on first EAPOL).
             let mut hs_writer: Option<crate::handshake::PcapWriter> = None;
             // BSSIDs whose beacon has already been written to the capture — one
@@ -92,6 +142,66 @@ pub fn start_scanner(
                     loop_iters = 0;
                     last_heartbeat = Instant::now();
                 }
+
+                // ── Collect hop-worker result (non-blocking) ──────────────────
+                if let Ok(result) = hop_rx.try_recv() {
+                    if locked {
+                        // A lock command arrived while the hop was in flight —
+                        // discard the result, the channel is already set synchronously.
+                        hop_pending = false;
+                    } else {
+                        match result {
+                            Ok((ch, band)) => {
+                                // Successful channel change.
+                                failed_channels.remove(&(ch, band));
+                                last_successful_hop = Instant::now();
+                                let _ = event_tx.send(ScannerEvent::Error(format!(
+                                    "[hop] ch{} OK (worker)", ch
+                                )));
+                                let _ = event_tx.send(ScannerEvent::ChannelChanged { channel: ch, band });
+                                last_channel_hop = Instant::now();
+                                hop_pending = false;
+                                hop_attempts = 0;
+                            }
+                            Err(e) => {
+                                // The channel failed — log it and optionally retry.
+                                let (ch, band) = scan_channels[channel_idx];
+                                let _ = event_tx.send(ScannerEvent::Error(format!(
+                                    "[hop] ch{} FAIL (worker): {}", ch, e
+                                )));
+                                if failed_channels.insert((ch, band)) {
+                                    let _ = event_tx.send(ScannerEvent::Error(format!(
+                                        "Channel ch{} ({}) unavailable: {}", ch, band.label(), e
+                                    )));
+                                }
+                                hop_attempts += 1;
+                                let max_attempts = MAX_HOP_ATTEMPTS.min(scan_channels.len());
+                                if hop_attempts < max_attempts && !scan_channels.is_empty() {
+                                    // Dispatch the next candidate immediately.
+                                    channel_idx = (channel_idx + 1) % scan_channels.len();
+                                    let (next_ch, next_band) = scan_channels[channel_idx];
+                                    // try_send won't block (bounded channel, worker is idle).
+                                    let _ = hop_tx.try_send((next_ch, next_band));
+                                    // hop_pending stays true
+                                } else {
+                                    // All retries exhausted — surface stall warning if needed.
+                                    if last_successful_hop.elapsed() > Duration::from_secs(5) {
+                                        let _ = event_tx.send(ScannerEvent::Error(format!(
+                                            "Channel hop stalled: no usable channel in last {} attempts ({}s since last hop)",
+                                            max_attempts,
+                                            last_successful_hop.elapsed().as_secs(),
+                                        )));
+                                        last_successful_hop = Instant::now();
+                                    }
+                                    last_channel_hop = Instant::now();
+                                    hop_pending = false;
+                                    hop_attempts = 0;
+                                }
+                            }
+                        }
+                    }
+                }
+
                 // Drain scanner commands
                 while let Ok(cmd) = cmd_rx.try_recv() {
                     match cmd {
@@ -99,12 +209,18 @@ pub fn start_scanner(
                             let _ = event_tx.send(ScannerEvent::Error(format!(
                                 "[dbg] LOCK ch{} (locked was {})", ch, locked
                             )));
+                            // LockChannel is infrequent and needs immediate confirmation,
+                            // so we call set_channel synchronously here. Any in-flight
+                            // hop-worker result will be discarded (locked=true above).
                             match set_channel(&iface, ch, band) {
                                 Ok(()) => {
                                     let _ = event_tx.send(ScannerEvent::ChannelChanged { channel: ch, band });
                                     locked = true;
                                     sweep_mac = None;
                                     last_channel_hop = Instant::now();
+                                    // Mark pending=false so the discarded result (if any)
+                                    // is handled by the locked branch above.
+                                    hop_pending = false;
                                 }
                                 Err(e) => {
                                     // Don't lock on failure — keeps the scanner hopping rather
@@ -134,71 +250,35 @@ pub fn start_scanner(
                     }
                 }
 
-                // Channel hopping: switch every CHANNEL_HOP_MS (skip when locked)
+                // ── Channel-hop timer ─────────────────────────────────────────
+                // Only fires if no hop is currently in flight (!hop_pending) and
+                // we are not locked to a channel. The actual set_channel call
+                // happens in the hop-worker thread — this block just dispatches
+                // the request and logs the intent.
                 if !locked
+                    && !hop_pending
                     && last_channel_hop.elapsed() >= Duration::from_millis(CHANNEL_HOP_MS)
                     && !scan_channels.is_empty()
                 {
-                    // Advance to the next channel that actually tunes. A failed
-                    // set_channel does NOT change the channel, so if we stopped on
-                    // the first failure we'd park on the previous channel and burn
-                    // the whole CHANNEL_HOP_MS window — that's the "stuck on
-                    // specific channels" symptom when a contiguous block (e.g. 5 GHz
-                    // UNII-3 under a regdomain that disallows it) keeps failing.
-                    // Instead, skip past failures within this tick and only reset
-                    // the hop timer once we've actually landed somewhere. A dead
-                    // channel costs a fast EINVAL, not 400ms. Cap attempts per tick
-                    // so a long failing run can't monopolise the loop — the scanner
-                    // returns to drain commands (LockChannel/FreeHop/shutdown) and
-                    // simply resumes the sweep from where it left off next tick.
                     let dwell_ms = last_channel_hop.elapsed().as_millis();
                     let cur_ch = scan_channels.get(channel_idx).map(|(c,_)| *c).unwrap_or(0);
                     let _ = event_tx.send(ScannerEvent::Error(format!(
                         "[hop] firing dwell={}ms cur=ch{}", dwell_ms, cur_ch
                     )));
-                    const MAX_HOP_ATTEMPTS: usize = 4;
-                    let attempts = MAX_HOP_ATTEMPTS.min(scan_channels.len());
-                    let mut hopped = false;
-                    for _ in 0..attempts {
-                        channel_idx = (channel_idx + 1) % scan_channels.len();
-                        let (ch, band) = scan_channels[channel_idx];
-                        let t0 = Instant::now();
-                        match set_channel(&iface, ch, band) {
-                            Ok(()) => {
-                                failed_channels.remove(&(ch, band));
-                                last_successful_hop = Instant::now();
-                                let _ = event_tx.send(ScannerEvent::Error(format!(
-                                    "[hop] ch{} OK {}ms", ch, t0.elapsed().as_millis()
-                                )));
-                                let _ = event_tx.send(ScannerEvent::ChannelChanged { channel: ch, band });
-                                hopped = true;
-                                break;
-                            }
-                            Err(e) => {
-                                let _ = event_tx.send(ScannerEvent::Error(format!(
-                                    "[hop] ch{} FAIL {}ms: {}", ch, t0.elapsed().as_millis(), e
-                                )));
-                                if failed_channels.insert((ch, band)) {
-                                    let _ = event_tx.send(ScannerEvent::Error(format!(
-                                        "Channel ch{} ({}) unavailable: {}", ch, band.label(), e
-                                    )));
-                                }
-                            }
-                        }
+                    // Advance to the next candidate and dispatch to the worker.
+                    hop_attempts = 0;
+                    channel_idx = (channel_idx + 1) % scan_channels.len();
+                    let (ch, band) = scan_channels[channel_idx];
+                    // try_send: the channel has capacity 1 and the worker is idle
+                    // (hop_pending was false). If somehow full, fall back to
+                    // resetting the timer so we retry next tick.
+                    if hop_tx.try_send((ch, band)).is_ok() {
+                        hop_pending = true;
+                        // last_channel_hop is reset only when the result arrives
+                        // (success) or all retries are exhausted.
+                    } else {
+                        last_channel_hop = Instant::now();
                     }
-                    // All attempts failed — emit a stall warning once we've been
-                    // stuck for >5 s so the UI surfaces the problem rather than
-                    // looking frozen.
-                    if !hopped && last_successful_hop.elapsed() > Duration::from_secs(5) {
-                        let _ = event_tx.send(ScannerEvent::Error(format!(
-                            "Channel hop stalled: no usable channel in last {} attempts ({}s since last hop)",
-                            attempts,
-                            last_successful_hop.elapsed().as_secs(),
-                        )));
-                        // Reset so we re-emit every 5 s rather than every tick.
-                        last_successful_hop = Instant::now();
-                    }
-                    last_channel_hop = Instant::now();
                 }
 
                 match cap.next_packet() {
@@ -1460,8 +1540,8 @@ fn stub_roam_clients(
     supports_5ghz: bool,
     supports_6ghz: bool,
 ) {
-    use rand::Rng;
-    let mut rng = rand::thread_rng();
+    use rand::RngExt;
+    let mut rng = rand::rng();
 
     // Collect bssids visible in this scan (filtered to enabled bands)
     let visible_bssids: Vec<String> = FAKE_APS
@@ -1484,11 +1564,11 @@ fn stub_roam_clients(
         .flat_map(|(bssid, clients)| {
             clients.iter().map(move |c| (bssid.clone(), c.mac.clone()))
         })
-        .filter(|_| rng.gen_bool(0.05))
+        .filter(|_| rng.random_bool(0.05))
         .collect();
 
     for (old_bssid, mac) in roam_candidates {
-        let is_hard_roam = rng.gen_bool(0.60);
+        let is_hard_roam = rng.random_bool(0.60);
 
         if is_hard_roam {
             let other_bssids: Vec<&String> = visible_bssids
@@ -1498,7 +1578,7 @@ fn stub_roam_clients(
             if other_bssids.is_empty() {
                 continue;
             }
-            let new_bssid = other_bssids[rng.gen_range(0..other_bssids.len())].clone();
+            let new_bssid = other_bssids[rng.random_range(0..other_bssids.len())].clone();
 
             let client_opt = ap_clients
                 .get_mut(&old_bssid)
