@@ -343,7 +343,9 @@ pub fn start_scanner(
                                 let _ = event_tx.send(ScannerEvent::ApDiscovered(new_ap.clone()));
                                 ap_map.insert(bssid2, new_ap);
                             }
-                            continue; // skip client parsing for beacons
+                            // Fall through to parse_client_frame_raw:
+                            // beacons (subtype 8) → _ => None (no-op);
+                            // probe responses (subtype 5) → extracts client MAC from Addr1.
                         }
 
                         // Try parsing as client frame (probe req, assoc, auth, data)
