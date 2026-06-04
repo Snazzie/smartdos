@@ -170,7 +170,10 @@ fn process_scanner_events(app: &mut App) {
                             let mut new_client = client.clone();
                             new_client.friendly_name = fname;
                             ap.clients.push(new_client);
+                            app.add_log(format!("[DBG] client {} → {}", client.mac, ap_bssid));
                         }
+                    } else {
+                        app.add_log(format!("[DBG] client {} → {} (AP not in list, {} known)", client.mac, ap_bssid, app.ap_list.len()));
                     }
                     maybe_update_follow(app, &client.mac, &ap_bssid);
                     handle_sweep_match(app, &client.mac, &ap_bssid);
