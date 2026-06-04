@@ -72,6 +72,8 @@ pub fn start_scanner(
             let mut locked = false;
             let mut sweep_mac: Option<String> = None;
             let mut last_successful_hop = Instant::now();
+            let mut last_heartbeat = Instant::now();
+            let mut loop_iters: u64 = 0;
             // Lazily-created handshake/PMKID capture file (opened on first EAPOL).
             let mut hs_writer: Option<crate::handshake::PcapWriter> = None;
             // BSSIDs whose beacon has already been written to the capture — one
@@ -80,6 +82,18 @@ pub fn start_scanner(
                 std::collections::HashSet::new();
 
             while running.load(Ordering::Relaxed) {
+                loop_iters += 1;
+                if last_heartbeat.elapsed() >= Duration::from_secs(2) {
+                    let cur_ch = scan_channels.get(channel_idx).map(|(c,_)| *c).unwrap_or(0);
+                    let _ = event_tx.send(ScannerEvent::Error(format!(
+                        "[hb] iters={} ch={} dwell={}ms locked={}",
+                        loop_iters, cur_ch,
+                        last_channel_hop.elapsed().as_millis(),
+                        locked
+                    )));
+                    loop_iters = 0;
+                    last_heartbeat = Instant::now();
+                }
                 // Drain scanner commands
                 while let Ok(cmd) = cmd_rx.try_recv() {
                     match cmd {
