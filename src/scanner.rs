@@ -72,8 +72,6 @@ pub fn start_scanner(
             let mut locked = false;
             let mut sweep_mac: Option<String> = None;
             let mut last_successful_hop = Instant::now();
-            let mut last_heartbeat = Instant::now();
-            let mut loop_iters: u64 = 0;
             // Lazily-created handshake/PMKID capture file (opened on first EAPOL).
             let mut hs_writer: Option<crate::handshake::PcapWriter> = None;
             // BSSIDs whose beacon has already been written to the capture — one
@@ -82,25 +80,10 @@ pub fn start_scanner(
                 std::collections::HashSet::new();
 
             while running.load(Ordering::Relaxed) {
-                loop_iters += 1;
-                if last_heartbeat.elapsed() >= Duration::from_secs(2) {
-                    let cur_ch = scan_channels.get(channel_idx).map(|(c,_)| *c).unwrap_or(0);
-                    let _ = event_tx.send(ScannerEvent::Error(format!(
-                        "[hb] iters={} ch={} dwell={}ms locked={}",
-                        loop_iters, cur_ch,
-                        last_channel_hop.elapsed().as_millis(),
-                        locked
-                    )));
-                    loop_iters = 0;
-                    last_heartbeat = Instant::now();
-                }
                 // Drain scanner commands
                 while let Ok(cmd) = cmd_rx.try_recv() {
                     match cmd {
                         ScannerCommand::LockChannel(ch, band) => {
-                            let _ = event_tx.send(ScannerEvent::Error(format!(
-                                "[dbg] LockChannel ch{} received (was locked={})", ch, locked
-                            )));
                             match set_channel(&iface, ch, band) {
                                 Ok(()) => {
                                     let _ = event_tx.send(ScannerEvent::ChannelChanged { channel: ch, band });
@@ -153,38 +136,21 @@ pub fn start_scanner(
                     // so a long failing run can't monopolise the loop — the scanner
                     // returns to drain commands (LockChannel/FreeHop/shutdown) and
                     // simply resumes the sweep from where it left off next tick.
-                    let hop_timer_elapsed = last_channel_hop.elapsed().as_millis();
-                    let cur_ch = scan_channels.get(channel_idx).map(|(c,_)| *c).unwrap_or(0);
-                    let _ = event_tx.send(ScannerEvent::Error(format!(
-                        "[dbg] dwell {}ms on ch{} → hopping (locked={})",
-                        hop_timer_elapsed, cur_ch, locked
-                    )));
                     const MAX_HOP_ATTEMPTS: usize = 4;
                     let attempts = MAX_HOP_ATTEMPTS.min(scan_channels.len());
                     let mut hopped = false;
                     for _ in 0..attempts {
                         channel_idx = (channel_idx + 1) % scan_channels.len();
                         let (ch, band) = scan_channels[channel_idx];
-                        let tune_start = Instant::now();
-                        let result = set_channel(&iface, ch, band);
-                        let tune_ms = tune_start.elapsed().as_millis();
-                        match result {
+                        match set_channel(&iface, ch, band) {
                             Ok(()) => {
                                 failed_channels.remove(&(ch, band));
                                 last_successful_hop = Instant::now();
-                                let _ = event_tx.send(ScannerEvent::Error(format!(
-                                    "[hop] ch{} ok in {}ms (timer was {}ms overdue)",
-                                    ch, tune_ms,
-                                    hop_timer_elapsed.saturating_sub(CHANNEL_HOP_MS as u128)
-                                )));
                                 let _ = event_tx.send(ScannerEvent::ChannelChanged { channel: ch, band });
                                 hopped = true;
                                 break;
                             }
                             Err(e) => {
-                                let _ = event_tx.send(ScannerEvent::Error(format!(
-                                    "[hop] ch{} FAIL in {}ms: {}", ch, tune_ms, e
-                                )));
                                 if failed_channels.insert((ch, band)) {
                                     let _ = event_tx.send(ScannerEvent::Error(format!(
                                         "Channel ch{} ({}) unavailable: {}", ch, band.label(), e
