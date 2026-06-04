@@ -355,6 +355,29 @@ pub fn set_channel(mon_iface: &str, channel: u8, band: Band) -> Result<()> {
     Ok(())
 }
 
+/// Derive phy name for an interface via `iw dev <iface> info` when it's not
+/// available from the interface list (e.g. monitor interface already active).
+#[cfg(target_os = "linux")]
+pub fn phy_for_iface(iface: &str) -> String {
+    let output = match Command::new("iw").args(["dev", iface, "info"]).output() {
+        Ok(o) => o,
+        Err(_) => return String::new(),
+    };
+    for line in String::from_utf8_lossy(&output.stdout).lines() {
+        let t = line.trim();
+        if let Some(rest) = t.strip_prefix("wiphy ") {
+            let idx = rest.trim().to_string();
+            if !idx.is_empty() {
+                return format!("phy{}", idx);
+            }
+        }
+    }
+    String::new()
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn phy_for_iface(_iface: &str) -> String { String::new() }
+
 /// Probe which bands the physical interface supports via `iw phy <phy> channels`.
 /// Returns (supports_5ghz, supports_6ghz).
 #[cfg(target_os = "linux")]

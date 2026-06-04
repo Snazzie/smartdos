@@ -73,7 +73,8 @@ fn main() -> Result<()> {
     let listen_phy = ifaces.iter()
         .find(|i| i.name == listen_name)
         .map(|i| i.phy.clone())
-        .unwrap_or_default();
+        .filter(|p| !p.is_empty())
+        .unwrap_or_else(|| interface::phy_for_iface(&listen_name));
     let (supports_5ghz, supports_6ghz) = interface::detect_band_capabilities(&listen_phy);
 
     // ifaces ownership moves into run_setup — phy lookup must happen before this line
@@ -142,13 +143,6 @@ fn main() -> Result<()> {
         app.send_interval_ms = s.send_interval_ms;
         app.pursuit_mode = s.pursuit_mode;
         app.deauth_scope = s.deauth_scope;
-    }
-
-    let loaded_aps = persist::load_ap_list();
-    if !loaded_aps.is_empty() {
-        let count = loaded_aps.len();
-        app.ap_list = loaded_aps;
-        app.add_log(format!("Loaded {} persisted APs (press 'r' to clear)", count));
     }
 
     match app::init_scanner(&mut app, &listen_mon, supports_5ghz, supports_6ghz) {
@@ -967,7 +961,6 @@ fn shutdown<B: Backend>(_terminal: &mut Terminal<B>, app: &App) {
         let _ = interface::set_reg_domain(cc);
     }
 
-    let _ = persist::save_ap_list(&app.ap_list);
     let _ = saved_lists::save_client_names(&app.client_names);
 
     let _ = terminal::disable_raw_mode();
