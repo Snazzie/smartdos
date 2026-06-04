@@ -19,7 +19,7 @@ pub const CHANNELS_6GHZ: &[u8] = &[
     149, 153, 157, 161, 165, 169, 173, 177, 181, 185, 189, 193, 197, 201, 205, 209,
     213, 217, 221, 225, 229, 233,
 ];
-pub const CHANNEL_HOP_MS: u64 = 400;
+pub const CHANNEL_HOP_MS: u64 = 600;
 
 /// Wi-Fi band
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
