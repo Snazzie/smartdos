@@ -122,7 +122,10 @@ fn process_scanner_events(app: &mut App) {
                     sync_target_to_discovered_ap(app, &bssid, channel, band);
                 }
                 ScannerEvent::ApUpdated(ap) => {
-                    if let Some(existing) = app.ap_list.iter_mut().find(|a| a.bssid == ap.bssid) {
+                    let (bssid, channel, band) = (ap.bssid.clone(), ap.channel, ap.band);
+                    let pos = app.ap_list.iter().position(|a| a.bssid == bssid);
+                    if let Some(idx) = pos {
+                        let existing = &mut app.ap_list[idx];
                         // Compute traffic rate: EMA of beacons/sec
                         let elapsed = existing.last_seen.elapsed().as_secs_f64().max(0.05);
                         existing.traffic_rate =
@@ -151,6 +154,10 @@ fn process_scanner_events(app: &mut App) {
                                 existing.clients.push(new_c);
                             }
                         }
+                    } else {
+                        // AP was cleared by 'r' but scanner still knows it — re-insert.
+                        app.ap_list.push(ap);
+                        needs_sort = true;
                     }
                     if app.ap_list.len() > 1 {
                         needs_sort = true;
@@ -158,7 +165,7 @@ fn process_scanner_events(app: &mut App) {
                     // Keep any matching target's channel/band aligned with the AP's
                     // real channel (corrects stale channels from loaded lists);
                     // mid-attack channel following stays opt-in via pursuit mode.
-                    sync_target_to_discovered_ap(app, &ap.bssid, ap.channel, ap.band);
+                    sync_target_to_discovered_ap(app, &bssid, channel, band);
                 }
                 ScannerEvent::ApGone(_bssid) => {
                     // APs persist until user clears with 'r'
