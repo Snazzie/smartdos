@@ -952,6 +952,7 @@ fn parse_client_frame_raw(data: &[u8]) -> Option<(String, Client)> {
                                 packets: 1,
                                 last_seen: Instant::now(),
                                 associated: true,
+                                disconnects: 0,
                                 friendly_name: None,
                             },
                         ))
@@ -980,6 +981,7 @@ fn parse_client_frame_raw(data: &[u8]) -> Option<(String, Client)> {
                                 packets: 1,
                                 last_seen: Instant::now(),
                                 associated: true,
+                                disconnects: 0,
                                 friendly_name: None,
                             },
                         ))

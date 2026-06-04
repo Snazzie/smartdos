@@ -699,6 +699,7 @@ mod tests {
             packets: 1,
             last_seen: Instant::now(),
             associated: true,
+            disconnects: 0,
             friendly_name: None,
         }
     }
