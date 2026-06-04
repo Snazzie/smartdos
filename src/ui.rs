@@ -679,14 +679,17 @@ fn render_clients_panel(frame: &mut Frame, app: &App, area: Rect) {
                         Color::DarkGray
                     }),
                 )),
-                Cell::from(format!("{:>5}", client.packets)),
+                Cell::from(Span::styled(
+                    if client.disconnects > 0 { format!("{:>4}x", client.disconnects) } else { "    -".to_string() },
+                    Style::default().fg(if client.disconnects > 0 { Color::Red } else { Color::DarkGray }),
+                )),
             ])
             .style(row_style)
             .height(1)
         })
         .collect();
 
-    let header = Row::new(["MAC", "Name", "Vendor", "dBm", "St", "Pkts"].iter().map(|h| {
+    let header = Row::new(["MAC", "Name", "Vendor", "dBm", "St", "Dc"].iter().map(|h| {
         Cell::from(*h).style(
             Style::default()
                 .fg(Color::White)

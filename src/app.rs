@@ -203,6 +203,7 @@ fn process_scanner_events(app: &mut App) {
                             existing.last_seen = client.last_seen;
                             existing.associated = client.associated;
                             if prior_associated && !client.associated {
+                                existing.disconnects += 1;
                                 disconnect_detected = true;
                             }
                         }

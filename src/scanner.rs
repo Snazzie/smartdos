@@ -359,7 +359,7 @@ pub fn start_scanner(
                                 existing.signal_dbm = client.signal_dbm;
                                 existing.packets += 1;
                                 existing.last_seen = Instant::now();
-                                existing.associated = existing.associated || client.associated;
+                                existing.associated = client.associated;
                                 let _ = event_tx.send(ScannerEvent::ClientUpdated {
                                     ap_bssid: ap_bssid.clone(),
                                     client: existing.clone(),
@@ -850,6 +850,7 @@ fn parse_client_frame_raw(data: &[u8]) -> Option<(String, Client)> {
                         packets: 1,
                         last_seen: Instant::now(),
                         associated: false,
+                        disconnects: 0,
                         friendly_name: None,
                     },
                 ))
@@ -869,6 +870,7 @@ fn parse_client_frame_raw(data: &[u8]) -> Option<(String, Client)> {
                         packets: 1,
                         last_seen: Instant::now(),
                         associated: true,
+                        disconnects: 0,
                         friendly_name: None,
                     },
                 ))
@@ -882,20 +884,20 @@ fn parse_client_frame_raw(data: &[u8]) -> Option<(String, Client)> {
         //   5 = Probe Response (sent by AP for every directed or broadcast probe)
         (0, 1) | (0, 3) => {
             if !is_group_mac(&da) && !sa.starts_with("00:00:00") && sa != "ff:ff:ff:ff:ff:ff" {
-                Some((sa, Client { mac: da, signal_dbm, packets: 1, last_seen: Instant::now(), associated: true, friendly_name: None }))
+                Some((sa, Client { mac: da, signal_dbm, packets: 1, last_seen: Instant::now(), associated: true, disconnects: 0, friendly_name: None }))
             } else { None }
         }
         (0, 5) => {
             // Probe Response: client is probing, not yet associated
             if !is_group_mac(&da) && !sa.starts_with("00:00:00") && sa != "ff:ff:ff:ff:ff:ff" {
-                Some((sa, Client { mac: da, signal_dbm, packets: 1, last_seen: Instant::now(), associated: false, friendly_name: None }))
+                Some((sa, Client { mac: da, signal_dbm, packets: 1, last_seen: Instant::now(), associated: false, disconnects: 0, friendly_name: None }))
             } else { None }
         }
         // Deauthentication / Disassociation sent by AP to client:
         //   Addr1=DA=client, Addr2=SA=AP BSSID. Mark not-associated.
         (0, 10) | (0, 12) => {
             if !is_group_mac(&da) && !sa.starts_with("00:00:00") && sa != "ff:ff:ff:ff:ff:ff" {
-                Some((sa, Client { mac: da, signal_dbm, packets: 1, last_seen: Instant::now(), associated: false, friendly_name: None }))
+                Some((sa, Client { mac: da, signal_dbm, packets: 1, last_seen: Instant::now(), associated: false, disconnects: 0, friendly_name: None }))
             } else { None }
         }
         // Authentication (subtype 11) — deliberately NOT used for client
@@ -918,6 +920,7 @@ fn parse_client_frame_raw(data: &[u8]) -> Option<(String, Client)> {
                         packets: 1,
                         last_seen: Instant::now(),
                         associated: true,
+                        disconnects: 0,
                         friendly_name: None,
                     },
                 ))
@@ -1465,6 +1468,7 @@ fn start_scanner_demo(
                     packets: 1,
                     last_seen: Instant::now(),
                     associated: *assoc,
+                    disconnects: 0,
                     friendly_name: None,
                 };
                 let _ = event_tx.send(ScannerEvent::ClientDiscovered {
@@ -1483,6 +1487,7 @@ fn start_scanner_demo(
                     packets: 1,
                     last_seen: Instant::now(),
                     associated: *assoc,
+                    disconnects: 0,
                     friendly_name: None,
                 });
             }

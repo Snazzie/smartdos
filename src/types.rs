@@ -117,6 +117,7 @@ pub struct Client {
     pub packets: u64,
     pub last_seen: Instant,
     pub associated: bool,
+    pub disconnects: u32,
     pub friendly_name: Option<String>,
 }
 
