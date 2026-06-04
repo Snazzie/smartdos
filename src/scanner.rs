@@ -294,7 +294,10 @@ pub fn start_scanner(
                             }
                         }
                     }
-                    Err(pcap::Error::TimeoutExpired) => { /* expected, continue */ }
+                    Err(pcap::Error::TimeoutExpired) | Err(pcap::Error::NoMorePackets) => {
+                        // Non-blocking: no packet queued — sleep briefly to avoid busy-spin.
+                        std::thread::sleep(Duration::from_millis(1));
+                    }
                     Err(e) => {
                         let _ = event_tx.send(ScannerEvent::Error(format!("Capture error: {}", e)));
                         std::thread::sleep(Duration::from_millis(100));
@@ -408,6 +411,14 @@ fn open_capture(iface: &str) -> Result<Capture<pcap::Active>> {
     let filter = "(wlan[0] & 0x0C) == 0x00 or (wlan[0] & 0x0C) == 0x08";
     cap.filter(filter, true)
         .context("Failed to set capture filter")?;
+
+    // Switch to non-blocking mode so next_packet() never hangs in poll().
+    // On some drivers, after iw set freq the ring buffer fd stops responding
+    // to poll() until the hardware finishes tuning, causing an indefinite
+    // block that no timeout value can fix. Non-blocking returns NoMorePackets
+    // instantly when nothing is queued; the main loop sleeps 1 ms to avoid
+    // busy-spinning.
+    let cap = cap.setnonblock().context("Failed to set pcap nonblocking")?;
 
     Ok(cap)
 }
