@@ -4,9 +4,9 @@
 
 > **🚧 Work in Progress** — This project is under active development and has not been rigorously tested. Expect bugs, incomplete features, and breaking changes. Use at your own risk.
 
-**Wireless AP scanner + deauth attack orchestrator with terminal UI**
+**Wireless AP scanner + 802.11 DoS attack orchestrator with terminal UI**
 
-`smartdos` is an interactive TUI tool for ethical wireless penetration testing. It discovers nearby access points via beacon frame capture, lets you select targets, and orchestrates deauthentication attacks in round-robin or parallel mode — all from a keyboard-driven terminal interface.
+`smartdos` is an interactive TUI tool for ethical wireless penetration testing. It discovers nearby access points via beacon frame capture, lets you select targets, and orchestrates deauth, Auth-DoS (auth+assoc flood), and CSA-Beacon attacks in round-robin or parallel mode — all from a keyboard-driven terminal interface.
 
 ---
 
@@ -36,7 +36,7 @@
 | **Client Discovery**     | Detects associated clients per AP from data/management frames                        |
 | **Signal Display**       | dBm + percentage for each AP, color-coded (green/yellow/red)                         |
 | **Channel Detection**    | Reads channel from DS Parameter Set IE tag                                           |
-| **Encryption Detection** | Identifies OPEN / WPA / WPA2                                                         |
+| **Encryption Detection** | Identifies OPEN / WPA / WPA2 / WPA3 / OWE / enterprise (from the RSN IE)             |
 | **Vendor Lookup**        | OUI-based NIC vendor identification for APs and clients                              |
 | **Channel Hopping**      | Scanner hops across 2.4 GHz, 5 GHz, and 6 GHz channels every 250 ms                 |
 
@@ -51,7 +51,8 @@
 | **Client Deauth**        | Targeted deauth of a specific client MAC (bidirectional: AP→client and client→AP)   |
 | **Round-Robin Mode**     | Cycles through targets one at a time with configurable inter-burst delay             |
 | **Parallel Mode**        | Attacks all targets simultaneously                                                   |
-| **Configurable Burst**   | Adjustable burst size and send interval via in-app settings overlay (`G`)            |
+| **Configurable Burst**   | Adjustable burst size (200–10000) and send interval via in-app settings overlay (`G`) |
+| **Auto-Max Burst**       | Switching to Auth-DoS auto-sets burst to the max (10000 frames/target) for sustained association-table pressure; restores the previous burst on switch away |
 
 ### Attack Effectiveness by Target
 
@@ -104,7 +105,7 @@ table rather than as the first-line disconnect.
 | **Session Logging**      | All events written to `~/.smartdos/session.log` with auto-rotation at size limit    |
 | **Saved-List Restore**   | On launch, optionally restore a previously saved target/client list from `~/.smartdos/lists/` |
 | **AP List Persistence**  | Discovered APs saved to `~/.smartdos/aps.json`                                      |
-| **Attack Settings**      | Burst size, interval, attack type, pursuit mode persisted across sessions            |
+| **Attack Settings**      | Burst size, interval, attack type, attack mode, pursuit mode, and deauth scope persisted across sessions |
 | **Named Lists**          | Save/load named target or client lists via `~/.smartdos/lists/`                     |
 
 ### Interface & UI
@@ -238,10 +239,10 @@ sudo ./target/release/smartdos wlan0mon
 ### Deauth Attack
 
 1. Constructs raw 802.11 deauth management frames (Frame Control `0xC0`)
-2. Prepends a minimal radiotap header for proper driver injection
-3. Sends via pcap `sendpacket()` — 5-frame bursts per cycle
-4. **Round-robin**: cycles through targets one at a time (20ms between targets)
-5. **Parallel**: blasts all targets simultaneously (50ms between cycles)
+2. Prepends a minimal radiotap header (TX-flags NOACK) for proper driver injection
+3. Sends via pcap `sendpacket()` — `burst_size` frames per target per cycle (default 200, tunable via `G`)
+4. **Round-robin**: cycles through targets one at a time, sleeping the send interval (default 50 ms) between bursts
+5. **Parallel**: bursts every active target each cycle, then sleeps the send interval
 
 **Why deauth works (and its limit):** 802.11 deauth/disassoc are *notifications* —
 a pre-PMF receiver acts on them without verifying the sender, so a spoofed
