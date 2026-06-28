@@ -7,6 +7,9 @@ use std::sync::Arc;
 use std::time::Instant;
 use sysinfo::System;
 
+/// Max burst (must match the settings overlay clamp in settings.rs).
+pub const MAX_BURST_SIZE: u16 = 10000;
+
 /// Channel hopping config
 pub const CHANNELS_2GHZ: &[u8] = &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11];
 /// 5 GHz non-DFS channels only (UNII-1 + UNII-3).
@@ -135,6 +138,10 @@ pub struct AccessPoint {
     pub encryption: String,
     pub clients: Vec<Client>,
     pub traffic_rate: f64, // beacons/sec rolling average
+    /// Last raw 802.11 beacon frame (radiotap + FCS stripped) captured for this
+    /// BSSID. Used by the CSA-Beacon attack to clone the real beacon verbatim
+    /// rather than synthesizing a minimal one. `None` until a beacon is seen.
+    pub raw_beacon: Option<Vec<u8>>,
 }
 
 /// A target for deauth attack
@@ -149,6 +156,9 @@ pub struct Target {
     pub disconnect_count: u64,
     pub client_filter: Vec<String>,
     pub follow_managed: bool,
+    /// Cloned raw beacon (from the AP) for the CSA-Beacon attack. `None` falls
+    /// back to a synthesized beacon.
+    pub raw_beacon: Option<Vec<u8>>,
 }
 
 /// Deauth scope: broadcast all clients, or target a specific client
@@ -179,13 +189,18 @@ impl AttackMode {
 pub enum AttackType {
     Deauth,
     AuthDos,
+    /// Spoofed Channel-Switch-Announcement beacons. Beacons are not
+    /// PMF-protected, so this disconnects WPA3/802.11w clients that ignore
+    /// plaintext deauth.
+    CsaBeacon,
 }
 
 impl AttackType {
     pub fn toggle(&self) -> Self {
         match self {
             AttackType::Deauth => AttackType::AuthDos,
-            AttackType::AuthDos => AttackType::Deauth,
+            AttackType::AuthDos => AttackType::CsaBeacon,
+            AttackType::CsaBeacon => AttackType::Deauth,
         }
     }
 
@@ -193,6 +208,7 @@ impl AttackType {
         match self {
             AttackType::Deauth => "Deauth",
             AttackType::AuthDos => "Auth-DoS",
+            AttackType::CsaBeacon => "CSA-Beacon",
         }
     }
 
@@ -291,6 +307,9 @@ pub struct App {
     pub attack_type: AttackType,
     pub burst_size: u16,
     pub send_interval_ms: u64,
+    /// Burst/interval saved before Auth-DoS forced max-rate, restored on switch
+    /// away. `None` when not currently in the forced Auth-DoS override.
+    pub pre_authdos_rate: Option<(u16, u64)>,
     pub attack_running: bool,
     pub running: Arc<AtomicBool>,
     pub scanner_running: Arc<AtomicBool>,
@@ -381,6 +400,7 @@ impl App {
             attack_type: AttackType::Deauth,
             burst_size: 200,
             send_interval_ms: 50,
+            pre_authdos_rate: None,
             attack_running: false,
             running: running,
             scanner_running: Arc::new(AtomicBool::new(true)),
@@ -490,6 +510,7 @@ impl App {
                     disconnect_count: 0,
                     client_filter: vec![],
                     follow_managed: false,
+                    raw_beacon: ap.raw_beacon.clone(),
                 });
             }
         }
@@ -597,6 +618,7 @@ impl App {
                     disconnect_count: 0,
                     client_filter: macs.clone(),
                     follow_managed: true,
+                    raw_beacon: ap.raw_beacon.clone(),
                 });
             }
         }
@@ -657,6 +679,7 @@ mod tests {
             encryption: "WPA2".to_string(),
             clients: Vec::new(),
             traffic_rate: 0.0,
+            raw_beacon: None,
         }
     }
 

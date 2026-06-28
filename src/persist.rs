@@ -111,6 +111,7 @@ pub fn load_ap_list() -> Vec<AccessPoint> {
             encryption: s.encryption,
             clients: Vec::new(),
             traffic_rate: 0.0,
+            raw_beacon: None,
         })
         .collect()
 }
@@ -153,6 +154,7 @@ pub fn load_targets() -> Vec<Target> {
             disconnect_count: 0,
             client_filter: vec![],
             follow_managed: false,
+            raw_beacon: None,
         })
         .collect()
 }

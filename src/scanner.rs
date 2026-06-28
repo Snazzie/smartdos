@@ -669,6 +669,16 @@ fn parse_beacon_frame_raw(data: &[u8]) -> Option<AccessPoint> {
         ((signal_dbm + 95) * 100 / 65).max(5).min(100) as u8
     };
 
+    // Stash the raw 802.11 management frame (radiotap stripped, trailing FCS
+    // dropped if present) so the CSA-Beacon attack can clone it verbatim.
+    let raw_beacon = {
+        let mut f = data[offset..].to_vec();
+        if radiotap_has_fcs(data) && f.len() > 4 {
+            f.truncate(f.len() - 4);
+        }
+        Some(f)
+    };
+
     Some(AccessPoint {
         bssid,
         ssid,
@@ -681,7 +691,48 @@ fn parse_beacon_frame_raw(data: &[u8]) -> Option<AccessPoint> {
         encryption,
         clients: Vec::new(),
         traffic_rate: 0.0,
+        raw_beacon,
     })
+}
+
+/// True if the radiotap header's Flags field has the FCS-at-end bit (0x10) set,
+/// meaning the captured 802.11 frame carries a trailing 4-byte FCS.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn radiotap_has_fcs(data: &[u8]) -> bool {
+    if data.len() < 8 || data[0] != 0 || data[1] != 0 {
+        return false;
+    }
+    // Walk all present words; EXT (bit 31) chains to the next word.
+    let mut pw_off = 4usize;
+    let mut first_present = 0u32;
+    let mut found_first = false;
+    loop {
+        if pw_off + 4 > data.len() {
+            return false;
+        }
+        let pw = u32::from_le_bytes([data[pw_off], data[pw_off + 1], data[pw_off + 2], data[pw_off + 3]]);
+        if !found_first {
+            first_present = pw;
+            found_first = true;
+        }
+        pw_off += 4;
+        if pw & (1 << 31) == 0 {
+            break;
+        }
+    }
+    // Flags (bit 1) is a first-word field, preceded only by TSFT (bit 0).
+    if first_present & (1 << 1) == 0 {
+        return false;
+    }
+    let mut offset = pw_off;
+    if first_present & (1 << 0) != 0 {
+        offset = (offset + 7) & !7; // TSFT: align 8, size 8
+        offset += 8;
+    }
+    if offset >= data.len() {
+        return false;
+    }
+    data[offset] & 0x10 != 0
 }
 
 /// Decode RSN IE (tag 48) → "WPA2", "WPA3", "W2-Ent", "W2/TKIP", "OWE", etc.
@@ -1422,6 +1473,7 @@ fn make_ap(bssid: &str, ssid: &str, channel: u8, signal_dbm: i16, encryption: &s
         encryption: encryption.to_string(),
         clients: Vec::new(),
         traffic_rate: 0.0,
+        raw_beacon: None,
     }
 }
 

