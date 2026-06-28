@@ -179,13 +179,18 @@ impl AttackMode {
 pub enum AttackType {
     Deauth,
     AuthDos,
+    /// Spoofed Channel-Switch-Announcement beacons. Beacons are not
+    /// PMF-protected, so this disconnects WPA3/802.11w clients that ignore
+    /// plaintext deauth.
+    CsaBeacon,
 }
 
 impl AttackType {
     pub fn toggle(&self) -> Self {
         match self {
             AttackType::Deauth => AttackType::AuthDos,
-            AttackType::AuthDos => AttackType::Deauth,
+            AttackType::AuthDos => AttackType::CsaBeacon,
+            AttackType::CsaBeacon => AttackType::Deauth,
         }
     }
 
@@ -193,6 +198,7 @@ impl AttackType {
         match self {
             AttackType::Deauth => "Deauth",
             AttackType::AuthDos => "Auth-DoS",
+            AttackType::CsaBeacon => "CSA-Beacon",
         }
     }
 
