@@ -241,6 +241,76 @@ sudo ./target/release/smartdos wlan0mon
 4. **Round-robin**: cycles through targets one at a time (20ms between targets)
 5. **Parallel**: blasts all targets simultaneously (50ms between cycles)
 
+**Why deauth works (and its limit):** 802.11 deauth/disassoc are *notifications* —
+a pre-PMF receiver acts on them without verifying the sender, so a spoofed
+deauth with the AP's MAC kicks the client instantly. The catch: **802.11w
+(PMF / Protected Management Frames)** cryptographically signs these frames, so a
+WPA3 (or PMF-enabled WPA2) client silently drops the spoofed deauth. That's why
+deauth is reliable on plain WPA2 but ineffective against modern PMF devices —
+and why Auth-DoS and CSA-Beacon exist.
+
+### Auth-DoS Attack (auth + association flood)
+
+Builders: `build_auth_dos_frames` in `src/attack.rs`.
+
+1. For each frame, generates a **fresh, unique source MAC** — locally-administered
+   unicast (`0x02` first byte) driven by a monotonic counter, so every fake
+   client looks distinct to the AP.
+2. Sends an **Open-System authentication request** (FC `0xB0`) from that MAC —
+   step 1 of the 802.11 join handshake.
+3. Immediately follows with an **association request** (FC `0x00`) from the *same*
+   MAC, carrying the AP's real **SSID element** plus supported/extended rate IEs
+   so the AP accepts it as a legitimate join.
+4. Repeats thousands of times per second (burst size / send interval are tunable).
+
+**Why it's effective — and why WPA3/PMF can't stop it:**
+
+- The AP must **allocate a real association-table slot and per-station state** for
+  every accepted assoc request. Flooding unique MACs **exhausts that table** (e.g.
+  an iPhone Personal Hotspot caps at ~5 clients) and **saturates the management
+  CPU** parsing the flood — legitimate clients can no longer join, and weak
+  firmware crashes or reboots.
+- An *auth-only* flood (the naive version) allocates almost nothing on modern
+  APs — they defer real state until association. Sending the **auth→assoc pair**
+  is what actually consumes resources. This is the key difference.
+- **PMF (802.11w) only protects *post-association* management frames** (deauth,
+  disassoc, action). Authentication and association requests happen *before* a
+  key exists, so they are **never protected** — WPA3 provides zero defense here.
+  This is why Auth-DoS works equally against WPA2 and WPA3.
+
+### CSA-Beacon Attack (Channel Switch Announcement)
+
+Builders: `build_csa_from_beacon` (clone) / `build_csa_beacon_frame` (synth) in
+`src/attack.rs`.
+
+1. The scanner stashes each AP's last raw beacon (`AccessPoint.raw_beacon`,
+   radiotap and trailing FCS stripped).
+2. The attack **clones that real beacon verbatim** — keeping the AP's genuine
+   RSN/HT/VHT/vendor IEs — then refreshes the sequence number, strips any existing
+   CSA element, and inserts a fresh **Channel Switch Announcement element**
+   (tag 37) pointing to a different (dead) channel, with *switch mode = 1* (stop
+   transmitting) and *count = 1* (switch immediately).
+3. Injects this spoofed beacon repeatedly from the AP's BSSID. (If no real beacon
+   was captured yet, it falls back to a synthesized minimal beacon.)
+
+**Why it's effective — and why it reaches PMF clients:**
+
+- CSA is a legitimate 802.11h feature: an AP uses it to tell associated clients
+  "I'm moving to channel X, follow me" (for radar avoidance / DFS). Clients
+  **trust and obey** a CSA that appears to come from their AP.
+- The spoofed CSA points to a channel the real AP **isn't** on, so the client
+  switches away and **loses its AP → disconnected**. Repeating it keeps the
+  client chasing a phantom.
+- Crucially, **beacons are *not* protected by PMF/802.11w** — only unicast robust
+  management frames are. So a PMF (WPA3) client that ignores spoofed deauth will
+  still honor a CSA beacon. This makes CSA-Beacon the only frame-level way to
+  *disconnect a client* that has PMF enabled.
+- **Fidelity matters:** modern clients (latest iOS especially) cross-check the
+  CSA beacon against the AP's real beacon and validate the target channel /
+  country / operating class. A stripped-down synthetic beacon is easy to flag and
+  ignore — cloning the real beacon byte-for-byte (this tool's default) is what
+  gets the CSA honored.
+
 ### Interface Management
 
 - Uses `airmon-ng start/stop` to enable/disable monitor mode
