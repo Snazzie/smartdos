@@ -7,6 +7,9 @@ use std::sync::Arc;
 use std::time::Instant;
 use sysinfo::System;
 
+/// Max burst (must match the settings overlay clamp in settings.rs).
+pub const MAX_BURST_SIZE: u16 = 10000;
+
 /// Channel hopping config
 pub const CHANNELS_2GHZ: &[u8] = &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11];
 /// 5 GHz non-DFS channels only (UNII-1 + UNII-3).
@@ -304,6 +307,9 @@ pub struct App {
     pub attack_type: AttackType,
     pub burst_size: u16,
     pub send_interval_ms: u64,
+    /// Burst/interval saved before Auth-DoS forced max-rate, restored on switch
+    /// away. `None` when not currently in the forced Auth-DoS override.
+    pub pre_authdos_rate: Option<(u16, u64)>,
     pub attack_running: bool,
     pub running: Arc<AtomicBool>,
     pub scanner_running: Arc<AtomicBool>,
@@ -394,6 +400,7 @@ impl App {
             attack_type: AttackType::Deauth,
             burst_size: 200,
             send_interval_ms: 50,
+            pre_authdos_rate: None,
             attack_running: false,
             running: running,
             scanner_running: Arc::new(AtomicBool::new(true)),

@@ -491,10 +491,42 @@ pub fn toggle_attack_mode(app: &mut App) {
     app.add_log(format!("Attack mode: {:?}", app.attack_mode));
 }
 
-/// Toggle attack type (Deauth ↔ AuthDos)
+/// Cycle attack type (Deauth → AuthDos → CsaBeacon). Entering Auth-DoS forces the
+/// max burst / min interval (assoc-table exhaustion needs the highest sustained
+/// rate); leaving it restores the rate the user had before.
 pub fn toggle_attack_type(app: &mut App) {
     app.attack_type = app.attack_type.toggle();
     app.add_log(format!("Attack type: {}", app.attack_type.label()));
+
+    match app.attack_type {
+        crate::types::AttackType::AuthDos => {
+            // Save the current burst once, then crank to max. Interval is left
+            // as-is (the configured send pacing, default 50ms).
+            if app.pre_authdos_rate.is_none() {
+                app.pre_authdos_rate = Some((app.burst_size, app.send_interval_ms));
+            }
+            app.burst_size = crate::types::MAX_BURST_SIZE;
+            app.add_log(format!(
+                "Auth-DoS: burst maxed → {} frames/target @ {}ms",
+                app.burst_size, app.send_interval_ms
+            ));
+        }
+        _ => {
+            // Restore the pre-Auth-DoS rate when switching away.
+            if let Some((burst, interval)) = app.pre_authdos_rate.take() {
+                app.burst_size = burst;
+                app.send_interval_ms = interval;
+            }
+        }
+    }
+
+    // Push the new rate to a running attack thread, if any.
+    if let Some(tx) = &app.attack_cmd_tx {
+        let _ = tx.send(crate::types::AttackCommand::UpdateSettings {
+            burst_size: app.burst_size,
+            send_interval_ms: app.send_interval_ms,
+        });
+    }
 }
 
 pub fn toggle_pursuit_mode(app: &mut App) {
