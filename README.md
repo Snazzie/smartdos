@@ -60,23 +60,26 @@ Which attack to reach for depends on the target's role and security. Legend:
 
 | Target / scenario                          | Deauth | Auth-DoS | CSA-Beacon | Best choice |
 | ------------------------------------------ | :----: | :------: | :--------: | ----------- |
-| WPA2 AP, **no** PMF                        |   ✅   |    ✅    |     ✅     | Deauth (kick) / Auth-DoS (crash) |
-| WPA3 / 802.11w (PMF) AP                     |   ❌   |    ✅    |     ⚠️     | **Auth-DoS** |
-| Crash / wedge an AP (firmware/table)       |   ❌   |    ✅    |     ❌     | **Auth-DoS** |
-| Disconnect a client behind PMF             |   ❌   |    ❌¹   |     ⚠️     | CSA-Beacon |
-| Legacy IoT / old router                    |   ✅   |    ✅    |     ⚠️     | Deauth |
-| Android client (PMF on, modern)            |   ❌   |    ❌¹   |     ⚠️     | CSA-Beacon |
-| **Latest iPhone — as client** (iOS 18, WPA3)|  ❌   |    ✅¹   |     ⚠️²    | **Auth-DoS** (via its AP) |
-| **Latest iPhone — as hotspot** (Personal Hotspot)| ✅³ |   ✅    |     ⚠️³    | **Auth-DoS** |
+| WPA2 AP, **no** PMF                        |   ✅   |    ✅    |     ✅     | Deauth (kick) / CSA-Beacon |
+| WPA3 / 802.11w (PMF) AP                     |   ❌   |    ⚠️    |     ✅     | **CSA-Beacon** |
+| Crash / wedge an AP (firmware/table)       |   ❌   |    ⚠️    |     ⚠️     | Auth-DoS |
+| Disconnect a client behind PMF             |   ❌   |    ❌¹   |     ✅     | **CSA-Beacon** |
+| Legacy IoT / old router                    |   ✅   |    ✅    |     ✅     | Deauth |
+| Android client (PMF on, modern)            |   ❌   |    ❌¹   |     ✅     | **CSA-Beacon** |
+| **Latest iPhone — as client** (iOS 18, WPA3)|  ❌   |    ⚠️¹   |     ✅²    | **CSA-Beacon** |
+| **Latest iPhone — as hotspot** (Personal Hotspot)| ✅³ |   ⚠️    |     ✅     | **CSA-Beacon** |
 
-Field-observed: **Deauth is highly effective against any WPA2 (no-PMF) target.**
-**Auth-DoS is highly effective against both WPA2 and WPA3** — auth/assoc frames are
-unprotected by 802.11w, so PMF provides no defense, and the auth+assoc flood
-exhausts the AP regardless of encryption.
+Field-observed: **CSA-Beacon is the most effective attack overall** — it reliably
+disconnects clients on both WPA2 and WPA3 (beacons are unprotected by 802.11w, and
+the verbatim beacon clone passes client-side CSA validation). **Deauth** stays
+reliable against any WPA2 (no-PMF) target. **Auth-DoS** also bypasses PMF and works
+against WPA2/WPA3, but in practice its disruption is **less consistent than
+CSA-Beacon** — keep it primarily for exhausting / crashing an AP's association
+table rather than as the first-line disconnect.
 
-¹ Auth-DoS targets the **AP**, not the client — it downs the client by taking out the AP it relies on.
-² Latest iOS validates CSA (channel/country/op-class) → partial; raise burst / lower interval to improve odds.
-³ Kicks devices *using* the hotspot; the assoc-flood (Auth-DoS) is what actually wedges the hotspot itself.
+¹ Auth-DoS targets the **AP**, not the client — it can only affect a client by taking out the AP it relies on.
+² Cloning the real beacon (this tool's default) is what gets latest iOS to honor the CSA; a synthetic beacon is often rejected.
+³ Deauth kicks devices *using* the hotspot only if they lack PMF; CSA-Beacon works regardless.
 
 ### Client Tracking & Pursuit
 
