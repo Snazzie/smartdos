@@ -1,28 +1,18 @@
 # TODO / Deferred Work
 
-## CSA-Beacon: clone the real captured beacon (higher disconnect rate)
+## CSA-Beacon: clone the real captured beacon — DONE
 
-**Status:** deferred.
+Implemented. The scanner now stashes each AP's last raw 802.11 beacon
+(`AccessPoint.raw_beacon`, radiotap + trailing FCS stripped via
+`radiotap_has_fcs`). It flows AP → `Target` → `TargetState`, and the CSA-Beacon
+attack prefers `build_csa_from_beacon` (verbatim clone with a refreshed sequence
+number, any stale CSA element stripped, and a fresh CSA inserted at the front of
+the IE list). Falls back to the synthesized `build_csa_beacon_frame` when no
+beacon has been captured yet.
 
-**Current behaviour:** `build_csa_beacon_frame` (src/attack.rs) synthesizes a
-*minimal* beacon for the target — correct BSSID + SSID + DS-param + a
-Channel-Switch-Announcement element, but missing the AP's RSN/security IE,
-HT/VHT/HE capability IEs, country, TIM, and vendor (WPS/Apple) IEs.
-
-**Problem:** modern clients (iOS especially) cross-check a CSA beacon against the
-AP's real beacon. A stripped-down skeleton is easier to flag as suspicious, so
-the CSA gets ignored and the client stays connected. Hit rate < 100%.
-
-**Upgrade:** capture the target's *actual* beacon (the scanner already receives
-beacons per-BSSID — see scanner.rs beacon dump) and replay it **verbatim with
-only the CSA element appended**, producing a byte-faithful clone. This is the
-difference between "sometimes works" and "reliably works" against iOS.
-
-**Work required:**
-- Plumb the captured raw beacon frame from the scanner thread → attack thread
-  (extend `ScannerEvent` / `Target` / `TargetState` to carry the last raw beacon
-  bytes for each BSSID).
-- In the CSA path, take that raw beacon, strip/replace any existing CSA IE, append
-  a fresh CSA element, refresh the sequence number, and inject.
-- Fall back to the current synthesized beacon when no captured beacon is available
-  yet.
+### Possible follow-ups
+- Refresh a live target's `raw_beacon` on every `ApUpdated` (currently captured
+  at target-add time; `rebuild_target_states` keeps the previous clone if a later
+  update carries none).
+- Match the radiotap TX rate/channel of the cloned beacon to the AP's real PHY
+  for even closer fidelity.

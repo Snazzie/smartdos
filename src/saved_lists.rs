@@ -116,6 +116,7 @@ pub fn load_saved_list(name: &str) -> Result<LoadedList> {
                         disconnect_count: 0,
                         client_filter: vec![],
                         follow_managed: false,
+                        raw_beacon: None,
                     }
                 })
                 .collect();

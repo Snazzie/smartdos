@@ -135,6 +135,10 @@ pub struct AccessPoint {
     pub encryption: String,
     pub clients: Vec<Client>,
     pub traffic_rate: f64, // beacons/sec rolling average
+    /// Last raw 802.11 beacon frame (radiotap + FCS stripped) captured for this
+    /// BSSID. Used by the CSA-Beacon attack to clone the real beacon verbatim
+    /// rather than synthesizing a minimal one. `None` until a beacon is seen.
+    pub raw_beacon: Option<Vec<u8>>,
 }
 
 /// A target for deauth attack
@@ -149,6 +153,9 @@ pub struct Target {
     pub disconnect_count: u64,
     pub client_filter: Vec<String>,
     pub follow_managed: bool,
+    /// Cloned raw beacon (from the AP) for the CSA-Beacon attack. `None` falls
+    /// back to a synthesized beacon.
+    pub raw_beacon: Option<Vec<u8>>,
 }
 
 /// Deauth scope: broadcast all clients, or target a specific client
@@ -496,6 +503,7 @@ impl App {
                     disconnect_count: 0,
                     client_filter: vec![],
                     follow_managed: false,
+                    raw_beacon: ap.raw_beacon.clone(),
                 });
             }
         }
@@ -603,6 +611,7 @@ impl App {
                     disconnect_count: 0,
                     client_filter: macs.clone(),
                     follow_managed: true,
+                    raw_beacon: ap.raw_beacon.clone(),
                 });
             }
         }
@@ -663,6 +672,7 @@ mod tests {
             encryption: "WPA2".to_string(),
             clients: Vec::new(),
             traffic_rate: 0.0,
+            raw_beacon: None,
         }
     }
 
