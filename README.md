@@ -45,12 +45,38 @@
 | Feature                  | Description                                                                          |
 | ------------------------ | ------------------------------------------------------------------------------------ |
 | **Deauth Injection**     | Raw 802.11 deauth frames (FC `0xC0`) with radiotap header via pcap `sendpacket()`   |
-| **Auth-DoS**             | 802.11 auth flood — spams AP with spoofed auth requests from unique MACs, exhausting the association table and saturating the management CPU. Causes beacon starvation → SSID disappears. Can crash AP firmware (restart required). Not mitigated by WPA3 or 802.11w/PMF. |
+| **Auth-DoS**             | 802.11 **auth+assoc flood** — each spoofed unique MAC walks the full auth→association handshake (assoc request carries the AP's real SSID + rate IEs), consuming a real association-table slot and saturating the management CPU. Exhausts the table / crashes AP firmware (restart required). **Not mitigated by WPA3 or 802.11w/PMF** (auth/assoc frames are unprotected). |
+| **CSA-Beacon**           | Spoofs the target's beacon with a **Channel-Switch-Announcement** element, herding clients onto a dead channel → disconnect. Clones the AP's real captured beacon verbatim (refreshed seq, fresh CSA) for fidelity, falling back to a synthesized beacon. Beacons are unprotected → **reaches WPA3/PMF clients that ignore deauth**. |
 | **Broadcast Deauth**     | Deauthenticates all clients from a target AP (broadcast DA)                          |
 | **Client Deauth**        | Targeted deauth of a specific client MAC (bidirectional: AP→client and client→AP)   |
 | **Round-Robin Mode**     | Cycles through targets one at a time with configurable inter-burst delay             |
 | **Parallel Mode**        | Attacks all targets simultaneously                                                   |
 | **Configurable Burst**   | Adjustable burst size and send interval via in-app settings overlay (`G`)            |
+
+### Attack Effectiveness by Target
+
+Which attack to reach for depends on the target's role and security. Legend:
+✅ reliable · ⚠️ partial / unreliable · ❌ ineffective.
+
+| Target / scenario                          | Deauth | Auth-DoS | CSA-Beacon | Best choice |
+| ------------------------------------------ | :----: | :------: | :--------: | ----------- |
+| WPA2 AP, **no** PMF                        |   ✅   |    ✅    |     ✅     | Deauth (kick) / Auth-DoS (crash) |
+| WPA3 / 802.11w (PMF) AP                     |   ❌   |    ✅    |     ⚠️     | **Auth-DoS** |
+| Crash / wedge an AP (firmware/table)       |   ❌   |    ✅    |     ❌     | **Auth-DoS** |
+| Disconnect a client behind PMF             |   ❌   |    ❌¹   |     ⚠️     | CSA-Beacon |
+| Legacy IoT / old router                    |   ✅   |    ✅    |     ⚠️     | Deauth |
+| Android client (PMF on, modern)            |   ❌   |    ❌¹   |     ⚠️     | CSA-Beacon |
+| **Latest iPhone — as client** (iOS 18, WPA3)|  ❌   |    ✅¹   |     ⚠️²    | **Auth-DoS** (via its AP) |
+| **Latest iPhone — as hotspot** (Personal Hotspot)| ✅³ |   ✅    |     ⚠️³    | **Auth-DoS** |
+
+Field-observed: **Deauth is highly effective against any WPA2 (no-PMF) target.**
+**Auth-DoS is highly effective against both WPA2 and WPA3** — auth/assoc frames are
+unprotected by 802.11w, so PMF provides no defense, and the auth+assoc flood
+exhausts the AP regardless of encryption.
+
+¹ Auth-DoS targets the **AP**, not the client — it downs the client by taking out the AP it relies on.
+² Latest iOS validates CSA (channel/country/op-class) → partial; raise burst / lower interval to improve odds.
+³ Kicks devices *using* the hotspot; the assoc-flood (Auth-DoS) is what actually wedges the hotspot itself.
 
 ### Client Tracking & Pursuit
 
@@ -159,7 +185,7 @@ sudo ./target/release/smartdos wlan0mon
 | `c`             | View clients of selected AP                                  |
 | `n`             | Name selected client                                         |
 | `h`             | Toggle harvest mode on selected AP (AP list panel only)      |
-| `A`             | Toggle attack type (Deauth ↔ Auth-DoS)                       |
+| `A`             | Cycle attack type (Deauth → Auth-DoS → CSA-Beacon)          |
 | `M`             | Toggle attack mode (Round-Robin ↔ Parallel)                  |
 | `P`             | Toggle pursuit mode                                          |
 | `G`             | Open settings overlay (burst size / send interval)           |
