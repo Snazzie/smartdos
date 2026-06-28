@@ -67,7 +67,7 @@ Which attack to reach for depends on the target's role and security. Legend:
 | Legacy IoT / old router                    |   ✅   |    ✅    |     ✅     | Deauth |
 | Android client (PMF on, modern)            |   ❌   |    ❌¹   |     ✅     | **CSA-Beacon** |
 | **Latest iPhone — as client** (iOS 18, WPA3)|  ❌   |    ⚠️¹   |     ✅²    | **CSA-Beacon** |
-| **Latest iPhone — as hotspot** (Personal Hotspot)| ✅³ |   ⚠️    |     ✅     | **CSA-Beacon** |
+| **Latest iPhone — as hotspot** (Personal Hotspot)| ❌ |   ⚠️    |     ✅     | **CSA-Beacon** |
 
 Field-observed: **CSA-Beacon is the most effective attack overall** — it reliably
 disconnects clients on both WPA2 and WPA3 (beacons are unprotected by 802.11w, and
@@ -79,7 +79,6 @@ table rather than as the first-line disconnect.
 
 ¹ Auth-DoS targets the **AP**, not the client — it can only affect a client by taking out the AP it relies on.
 ² Cloning the real beacon (this tool's default) is what gets latest iOS to honor the CSA; a synthetic beacon is often rejected.
-³ Deauth kicks devices *using* the hotspot only if they lack PMF; CSA-Beacon works regardless.
 
 ### Client Tracking & Pursuit
 
