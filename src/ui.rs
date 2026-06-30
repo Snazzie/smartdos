@@ -172,10 +172,17 @@ fn render_ap_list(frame: &mut Frame, app: &App, area: Rect) {
 
     let inner = block.inner(area);
     let visible_height = (inner.height as usize).saturating_sub(2);
-    let scroll_offset = app.scroll_offset;
 
     // Apply SSID/BSSID filter
     let visible_indices = app.visible_ap_indices();
+
+    // Derive the scroll window from the selected item's position WITHIN the
+    // filtered list — app.scroll_offset is a full-list index and is meaningless
+    // once a filter is active (would skip past every visible row).
+    let selected_pos = visible_indices
+        .iter()
+        .position(|&i| i == app.selected_ap_idx);
+    let scroll_offset = scroll_offset(selected_pos, visible_height);
 
     let header_cells = ["SSID", "BSSID", "CH", "dBm", "Enc", "Cli", "Rate"]
         .iter()

@@ -454,7 +454,7 @@ fn handle_key_event(app: &mut App, key: KeyEvent) {
                 // snap selection to first visible AP
                 let vis = app.visible_ap_indices();
                 app.selected_ap_idx = vis.first().copied().unwrap_or(0);
-                app.scroll_offset = app.selected_ap_idx;
+                app.scroll_offset = 0; // snap to top of filtered list
             }
             KeyCode::Backspace => {
                 let mut chars: Vec<char> = app.ap_filter.chars().collect();
@@ -465,7 +465,7 @@ fn handle_key_event(app: &mut App, key: KeyEvent) {
                 }
                 let vis = app.visible_ap_indices();
                 app.selected_ap_idx = vis.first().copied().unwrap_or(0);
-                app.scroll_offset = app.selected_ap_idx;
+                app.scroll_offset = 0; // snap to top of filtered list
             }
             KeyCode::Delete => {
                 let mut chars: Vec<char> = app.ap_filter.chars().collect();
@@ -475,7 +475,7 @@ fn handle_key_event(app: &mut App, key: KeyEvent) {
                 }
                 let vis = app.visible_ap_indices();
                 app.selected_ap_idx = vis.first().copied().unwrap_or(0);
-                app.scroll_offset = app.selected_ap_idx;
+                app.scroll_offset = 0; // snap to top of filtered list
             }
             KeyCode::Left => {
                 app.ap_filter_cursor = app.ap_filter_cursor.saturating_sub(1);
@@ -497,7 +497,6 @@ fn handle_key_event(app: &mut App, key: KeyEvent) {
                 if let Some(pos) = vis.iter().position(|&i| i == app.selected_ap_idx) {
                     if pos > 0 {
                         app.selected_ap_idx = vis[pos - 1];
-                        app.scroll_offset = app.scroll_offset.min(app.selected_ap_idx);
                     }
                 }
             }
