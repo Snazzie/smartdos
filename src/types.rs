@@ -481,10 +481,10 @@ impl App {
         if self.ap_filter.is_empty() {
             (0..self.ap_list.len()).collect()
         } else {
-            // Space-separated terms, ANDed together. Each term is matched fuzzily
+            // Space-separated terms, ORed together. Each term is matched fuzzily
             // (subsequence: chars appear in order, gaps allowed) against the SSID,
             // the BSSID, and the colon-stripped BSSID hex. "yu" matches "wjdyu";
-            // "yu 11" matches an AP whose SSID is "wjdyu" and BSSID hex has "11".
+            // "yu 11" matches "wjdyu" (via "yu") AND "dd112314" (via "11").
             let terms: Vec<String> = self
                 .ap_filter
                 .to_lowercase()
@@ -496,7 +496,7 @@ impl App {
                     let ssid = ap.ssid.to_lowercase();
                     let bssid = ap.bssid.to_lowercase();
                     let bssid_hex = bssid.replace(':', "");
-                    terms.iter().all(|t| {
+                    terms.iter().any(|t| {
                         fuzzy_subsequence(&ssid, t)
                             || fuzzy_subsequence(&bssid, t)
                             || fuzzy_subsequence(&bssid_hex, t)
