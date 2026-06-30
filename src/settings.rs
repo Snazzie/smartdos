@@ -1,5 +1,5 @@
 use anyhow::Result;
-use crossterm::event::{self, Event, KeyCode};
+use crossterm::event::{self, Event, KeyCode, KeyModifiers};
 use ratatui::{
     backend::Backend,
     layout::{Alignment, Constraint, Direction, Layout, Rect},
@@ -69,28 +69,34 @@ where
                             _ => {}
                         }
                     }
-                    KeyCode::Left => match state.cursor {
-                        0 => {
-                            state.burst_size = state.burst_size.saturating_sub(200).max(200);
-                        }
-                        1 => {
-                            if state.send_interval_ms > 10 {
-                                state.send_interval_ms -= 10;
+                    KeyCode::Left => {
+                        let shift = key.modifiers.contains(KeyModifiers::SHIFT);
+                        match state.cursor {
+                            0 => {
+                                let step = if shift { 2000 } else { 200 };
+                                state.burst_size = state.burst_size.saturating_sub(step).max(1);
                             }
-                        }
-                        _ => {}
-                    },
-                    KeyCode::Right => match state.cursor {
-                        0 => {
-                            state.burst_size = state.burst_size.saturating_add(200).min(10000);
-                        }
-                        1 => {
-                            if state.send_interval_ms < 2000 {
-                                state.send_interval_ms += 10;
+                            1 => {
+                                let step = if shift { 30000 } else { 10 };
+                                state.send_interval_ms = state.send_interval_ms.saturating_sub(step).max(1);
                             }
+                            _ => {}
                         }
-                        _ => {}
-                    },
+                    }
+                    KeyCode::Right => {
+                        let shift = key.modifiers.contains(KeyModifiers::SHIFT);
+                        match state.cursor {
+                            0 => {
+                                let step = if shift { 2000 } else { 200 };
+                                state.burst_size = state.burst_size.saturating_add(step).min(10000);
+                            }
+                            1 => {
+                                let step = if shift { 30000 } else { 10 };
+                                state.send_interval_ms = state.send_interval_ms.saturating_add(step).min(900_000);
+                            }
+                            _ => {}
+                        }
+                    }
                     KeyCode::Enter => {
                         return Ok(Some(SettingsResult {
                             burst_size: state.burst_size,
@@ -138,8 +144,8 @@ fn render_settings(frame: &mut Frame, state: &SettingsState) {
         let arrow = if is_sel { "◄ ►" } else { "   " };
         rows.push(Row::new(vec![
             Cell::from(Span::styled(format!("{}Burst Size", if is_sel { "▶ " } else { "  " }), label_style)),
-            Cell::from(Span::styled(format!("{:>5}", state.burst_size), value_style)),
-            Cell::from(Span::styled("frames/target  (200–10000, step 200)", Style::default().fg(Color::DarkGray))),
+            Cell::from(Span::styled(format!("{:>6}", state.burst_size), value_style)),
+            Cell::from(Span::styled("frames/target  (1–10000, ⇧ big step)", Style::default().fg(Color::DarkGray))),
             Cell::from(Span::styled(arrow, Style::default().fg(Color::Cyan))),
         ]));
     }
@@ -152,8 +158,8 @@ fn render_settings(frame: &mut Frame, state: &SettingsState) {
         let arrow = if is_sel { "◄ ►" } else { "   " };
         rows.push(Row::new(vec![
             Cell::from(Span::styled(format!("{}Send Interval", if is_sel { "▶ " } else { "  " }), label_style)),
-            Cell::from(Span::styled(format!("{:>5}", state.send_interval_ms), value_style)),
-            Cell::from(Span::styled("ms  (10–2000)", Style::default().fg(Color::DarkGray))),
+            Cell::from(Span::styled(format!("{:>6}", fmt_duration(state.send_interval_ms)), value_style)),
+            Cell::from(Span::styled("(1ms–15m, ⇧ big step)", Style::default().fg(Color::DarkGray))),
             Cell::from(Span::styled(arrow, Style::default().fg(Color::Cyan))),
         ]));
     }
@@ -184,7 +190,7 @@ fn render_settings(frame: &mut Frame, state: &SettingsState) {
         rows,
         [
             Constraint::Length(18),
-            Constraint::Length(6),
+            Constraint::Length(7),
             Constraint::Min(22),
             Constraint::Length(4),
         ],
@@ -206,6 +212,27 @@ fn render_settings(frame: &mut Frame, state: &SettingsState) {
     ]))
     .alignment(Alignment::Center);
     frame.render_widget(hint, chunks[1]);
+}
+
+/// Human-friendly duration: ms under 1s, else s / m+s.
+fn fmt_duration(ms: u64) -> String {
+    if ms < 1000 {
+        format!("{}ms", ms)
+    } else if ms < 60_000 {
+        if ms % 1000 == 0 {
+            format!("{}s", ms / 1000)
+        } else {
+            format!("{:.1}s", ms as f64 / 1000.0)
+        }
+    } else {
+        let mins = ms / 60_000;
+        let secs = (ms % 60_000) / 1000;
+        if secs == 0 {
+            format!("{}m", mins)
+        } else {
+            format!("{}m{}s", mins, secs)
+        }
+    }
 }
 
 fn sel_style(is_sel: bool, base: Color) -> Style {

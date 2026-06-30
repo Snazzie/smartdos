@@ -359,9 +359,25 @@ pub struct App {
     pub channel_focused: bool, // true while locked to an AP's channel for client discovery
     pub focused_ap_bssid: Option<String>, // BSSID of AP selected when entering clients view
     pub ap_filter: String,     // live SSID/BSSID filter text; empty = show all
+    pub ap_filter_cursor: usize, // char-index insertion point within ap_filter
     pub band_2ghz_enabled: bool,
     pub band_5ghz_enabled: bool,
     pub band_6ghz_enabled: bool,
+}
+
+/// True if every char of `needle` appears in `haystack` in order (gaps allowed).
+/// Both must already be lowercased by the caller. Empty needle always matches.
+pub fn fuzzy_subsequence(haystack: &str, needle: &str) -> bool {
+    let mut chars = haystack.chars();
+    'outer: for nc in needle.chars() {
+        for hc in chars.by_ref() {
+            if hc == nc {
+                continue 'outer;
+            }
+        }
+        return false;
+    }
+    true
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -448,6 +464,7 @@ impl App {
             channel_focused: false,
             focused_ap_bssid: None,
             ap_filter: String::new(),
+            ap_filter_cursor: 0,
             band_2ghz_enabled: true,
             band_5ghz_enabled: true,
             // 6 GHz off by default: most regdomains/cards reject 6 GHz tuning, so
@@ -464,17 +481,26 @@ impl App {
         if self.ap_filter.is_empty() {
             (0..self.ap_list.len()).collect()
         } else {
-            let q = self.ap_filter.to_lowercase();
-            // BSSID is stored with colons (aa:bb:cc:dd:ee:ff). Strip colons from both the
-            // query and the address so a raw-hex query like "aabbcc" matches a substring
-            // anywhere in the address, not just where it happens to align with octets.
-            let q_hex = q.replace(':', "");
+            // Space-separated terms, ANDed together. Each term is matched fuzzily
+            // (subsequence: chars appear in order, gaps allowed) against the SSID,
+            // the BSSID, and the colon-stripped BSSID hex. "yu" matches "wjdyu";
+            // "yu 11" matches an AP whose SSID is "wjdyu" and BSSID hex has "11".
+            let terms: Vec<String> = self
+                .ap_filter
+                .to_lowercase()
+                .split_whitespace()
+                .map(|s| s.to_string())
+                .collect();
             self.ap_list.iter().enumerate()
                 .filter(|(_, ap)| {
+                    let ssid = ap.ssid.to_lowercase();
                     let bssid = ap.bssid.to_lowercase();
-                    ap.ssid.to_lowercase().contains(&q)
-                        || bssid.contains(&q)
-                        || (!q_hex.is_empty() && bssid.replace(':', "").contains(&q_hex))
+                    let bssid_hex = bssid.replace(':', "");
+                    terms.iter().all(|t| {
+                        fuzzy_subsequence(&ssid, t)
+                            || fuzzy_subsequence(&bssid, t)
+                            || fuzzy_subsequence(&bssid_hex, t)
+                    })
                 })
                 .map(|(i, _)| i)
                 .collect()

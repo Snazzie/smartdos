@@ -445,17 +445,52 @@ fn handle_key_event(app: &mut App, key: KeyEvent) {
     if app.input_mode == InputMode::ApFilter {
         match key.code {
             KeyCode::Char(c) => {
-                app.ap_filter.push(c);
+                // insert at cursor
+                let mut chars: Vec<char> = app.ap_filter.chars().collect();
+                let pos = app.ap_filter_cursor.min(chars.len());
+                chars.insert(pos, c);
+                app.ap_filter = chars.into_iter().collect();
+                app.ap_filter_cursor = pos + 1;
                 // snap selection to first visible AP
                 let vis = app.visible_ap_indices();
                 app.selected_ap_idx = vis.first().copied().unwrap_or(0);
                 app.scroll_offset = app.selected_ap_idx;
             }
             KeyCode::Backspace => {
-                app.ap_filter.pop();
+                let mut chars: Vec<char> = app.ap_filter.chars().collect();
+                if app.ap_filter_cursor > 0 && app.ap_filter_cursor <= chars.len() {
+                    chars.remove(app.ap_filter_cursor - 1);
+                    app.ap_filter_cursor -= 1;
+                    app.ap_filter = chars.into_iter().collect();
+                }
                 let vis = app.visible_ap_indices();
                 app.selected_ap_idx = vis.first().copied().unwrap_or(0);
                 app.scroll_offset = app.selected_ap_idx;
+            }
+            KeyCode::Delete => {
+                let mut chars: Vec<char> = app.ap_filter.chars().collect();
+                if app.ap_filter_cursor < chars.len() {
+                    chars.remove(app.ap_filter_cursor);
+                    app.ap_filter = chars.into_iter().collect();
+                }
+                let vis = app.visible_ap_indices();
+                app.selected_ap_idx = vis.first().copied().unwrap_or(0);
+                app.scroll_offset = app.selected_ap_idx;
+            }
+            KeyCode::Left => {
+                app.ap_filter_cursor = app.ap_filter_cursor.saturating_sub(1);
+            }
+            KeyCode::Right => {
+                let len = app.ap_filter.chars().count();
+                if app.ap_filter_cursor < len {
+                    app.ap_filter_cursor += 1;
+                }
+            }
+            KeyCode::Home => {
+                app.ap_filter_cursor = 0;
+            }
+            KeyCode::End => {
+                app.ap_filter_cursor = app.ap_filter.chars().count();
             }
             KeyCode::Up => {
                 let vis = app.visible_ap_indices();
@@ -480,6 +515,7 @@ fn handle_key_event(app: &mut App, key: KeyEvent) {
             }
             KeyCode::Esc => {
                 app.ap_filter.clear();
+                app.ap_filter_cursor = 0;
                 app.input_mode = InputMode::Normal;
                 app.selected_ap_idx = 0;
                 app.scroll_offset = 0;
@@ -885,10 +921,12 @@ fn handle_key_event(app: &mut App, key: KeyEvent) {
         KeyCode::Char('r') | KeyCode::Char('R') => {
             app::clear_scan_results(app);
             app.ap_filter.clear();
+            app.ap_filter_cursor = 0;
         }
         KeyCode::Char('/') => {
             if app.tab_selection == TabSelection::ApList {
                 app.input_mode = InputMode::ApFilter;
+                app.ap_filter_cursor = app.ap_filter.chars().count();
             }
         }
         KeyCode::Char('w') | KeyCode::Char('W') => {
@@ -984,6 +1022,7 @@ mod tests {
         let (mut app, _tx) = App::new();
         app.input_mode = InputMode::ApFilter;
         app.ap_filter = "abc".to_string();
+        app.ap_filter_cursor = 3;
 
         let ctrl_h = KeyEvent::new(KeyCode::Char('h'), KeyModifiers::CONTROL);
         handle_key_event(&mut app, ctrl_h);
@@ -997,6 +1036,7 @@ mod tests {
         let (mut app, _tx) = App::new();
         app.input_mode = InputMode::ApFilter;
         app.ap_filter = "ab".to_string();
+        app.ap_filter_cursor = 2;
 
         let h = KeyEvent::new(KeyCode::Char('h'), KeyModifiers::NONE);
         handle_key_event(&mut app, h);

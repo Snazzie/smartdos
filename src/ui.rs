@@ -921,10 +921,16 @@ fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
             .border_style(Style::default().fg(Color::Yellow));
         let inner = block.inner(area);
         frame.render_widget(block, area);
+        // Split the filter text at the cursor so the block sits at the insertion point.
+        let chars: Vec<char> = app.ap_filter.chars().collect();
+        let cur = app.ap_filter_cursor.min(chars.len());
+        let before: String = chars[..cur].iter().collect();
+        let after: String = chars[cur..].iter().collect();
         let line = Line::from(vec![
             Span::styled(" Filter: ", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
-            Span::styled(app.ap_filter.clone(), Style::default().fg(Color::White)),
+            Span::styled(before, Style::default().fg(Color::White)),
             Span::styled("█", Style::default().fg(Color::Yellow)),
+            Span::styled(after, Style::default().fg(Color::White)),
             Span::raw("   "),
             Span::styled(" Enter ", Style::default().fg(Color::DarkGray)),
             Span::raw("keep  "),
