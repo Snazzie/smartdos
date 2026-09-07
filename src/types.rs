@@ -10,11 +10,17 @@ use sysinfo::System;
 /// Max burst (must match the settings overlay clamp in settings.rs).
 pub const MAX_BURST_SIZE: u16 = 10000;
 
-/// Channel hopping config
-pub const CHANNELS_2GHZ: &[u8] = &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11];
-/// 5 GHz non-DFS channels only (UNII-1 + UNII-3).
-/// DFS channels 52-144 require radar detection (CAC) and block iw indefinitely.
-pub const CHANNELS_5GHZ: &[u8] = &[36, 40, 44, 48, 149, 153, 157, 161, 165];
+/// Channel hopping config. Include European channels 12/13; the live scanner
+/// runs under the IN regulatory domain, where both are enabled.
+pub const CHANNELS_2GHZ: &[u8] = &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13];
+/// 5 GHz channels. DFS channels are included for passive discovery; drivers
+/// that reject DFS tuning fail fast in the hop worker and scanning continues.
+pub const CHANNELS_5GHZ: &[u8] = &[
+    36, 40, 44, 48, // UNII-1
+    52, 56, 60, 64, // UNII-2A (DFS)
+    100, 104, 108, 112, 116, 120, 124, 128, 132, 136, 140, 144, // UNII-2C (DFS)
+    149, 153, 157, 161, 165, // UNII-3
+];
 /// 6 GHz: every 4th channel (all 20 MHz primaries, 1–233)
 pub const CHANNELS_6GHZ: &[u8] = &[
     1, 5, 9, 13, 17, 21, 25, 29, 33, 37, 41, 45, 49, 53, 57, 61, 65, 69, 73, 77,
@@ -796,6 +802,14 @@ mod tests {
     }
 
     // ── channel / band / frequency roundtrip tests ────────────────────────────
+
+    #[test]
+    fn scan_plan_includes_european_and_dfs_channels() {
+        let channels = scan_channels_for(true, false, true, true, false);
+        assert!(channels.contains(&(12, Band::TwoGHz)));
+        assert!(channels.contains(&(13, Band::TwoGHz)));
+        assert!(channels.contains(&(128, Band::FiveGHz)));
+    }
 
     #[test]
     fn channel_to_freq_roundtrips_all_2ghz_channels() {

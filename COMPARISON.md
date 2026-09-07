@@ -34,8 +34,8 @@ smartdos = focused Rust TUI deauth tool. airgeddon = full-spectrum bash framewor
 
 | Feature | smartdos | airgeddon |
 |---|---|---|
-| 2.4GHz (ch 1-14) | ✓ ch 1-11 | ✓ |
-| 5GHz | ✓ ch 36-165 | ✓ ch 36-165 + DFS |
+| 2.4GHz (ch 1-14) | ✓ ch 1-13 | ✓ |
+| 5GHz | ✓ ch 36-165 + DFS | ✓ ch 36-165 + DFS |
 | 6GHz | ✗ | ✓ |
 | Per-interface band detection | ✗ | ✓ iw phy check |
 | Channel hop scope | 2.4GHz + 5GHz | all supported bands |

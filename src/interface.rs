@@ -10,11 +10,11 @@ use crate::types::{Band, WirelessInterface};
 #[cfg(target_os = "linux")]
 use crate::types::channel_to_freq_mhz;
 
-/// Regulatory country code that unlocks max TX power AND full non-DFS channel
-/// coverage. India (IN) permits 30 dBm on 2.4 GHz, 30 dBm on UNII-1
-/// (5150–5250 MHz, ch 36–48) and 30 dBm on UNII-3 (5725–5875 MHz, ch 149–165),
-/// none of them NO-IR — so the scanner can actually tune every non-DFS 5 GHz
-/// channel in CHANNELS_5GHZ, and `iw set txpower fixed` isn't clamped.
+/// Regulatory country code that unlocks max TX power and the broadest
+/// permitted channel coverage. India (IN) permits 30 dBm on 2.4 GHz, 30 dBm
+/// on UNII-1 (5150–5250 MHz, ch 36–48) and 30 dBm on UNII-3
+/// (5725–5875 MHz, ch 149–165), none of them NO-IR — so non-DFS channels can
+/// be tuned when the adapter honors the selected regulatory domain.
 ///
 /// Do NOT use BO here: Bolivia's regdomain omits UNII-1 entirely (its only
 /// non-DFS 5 GHz allowance is 5735–5835) and caps 2.4 GHz at 20 dBm, so
